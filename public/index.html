@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Aha · 创意会议工作台</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="Aha 首页"><span class="brand-mark">a<span>✳</span></span><div>Aha<span class="brand-sub">IDEA SEARCH ENGINE</span></div></a>
+    <button id="new-run" class="new-button"><span>＋</span> 新建会议 <span class="key">N</span></button>
+    <div class="sidebar-label">工作空间</div>
+    <button class="nav-item active" id="workspace-nav"><span>◈</span> 会议工作台</button>
+    <button class="nav-item" id="compare-nav"><span>▥</span> 实验对照</button>
+    <button class="nav-item" id="config-nav"><span>⚙</span> 模型与规则</button>
+    <div class="sidebar-label history-label">最近的会议 <span id="history-count">0</span></div>
+    <div id="history" class="history"></div>
+    <div class="sidebar-footer"><span class="online-dot"></span> 本地工作空间 <span>v0.1</span></div>
+  </aside>
+  <div class="shell">
+    <header class="topbar"><div><span class="muted">工作空间</span><span class="slash">/</span><span id="page-title">会议工作台</span></div><div class="top-right"><span class="local-badge">LOCAL PROTOTYPE</span><button id="help-button" class="icon-button" title="查看使用说明">?</button></div></header>
+    <main id="main"></main>
+    <footer class="page-footer">让不同的思路相遇，让有价值的想法留下。<span>Aha · Prototype</span></footer>
+  </div>
+  <div id="toast" role="status" class="toast hidden"></div>
+  <dialog id="help-dialog"><button id="close-help" class="dialog-close" aria-label="关闭">×</button><span class="eyebrow">QUICK START</span><h2>开始一次创意会议</h2><p>输入开放式问题和硬约束，选择实验方案，然后开始运行。</p><p>系统读取本地配置与 API Key。密钥只保存在服务端。席位、服务商和各阶段参数可在「模型与规则」页面修改。</p><p>运行中可查看每轮原始发言、观点板和决策备忘录，也可随时停止。JSON 导出包含完整请求、响应、操作和不可变快照。</p><p>采用率来自 Chair 自报引用，仅用于追踪输出来源；创意质量需要独立评审。</p></dialog>
+  <script type="module" src="/app.js"></script>
+</body></html>

@@ -1,0 +1,121 @@
+{
+  "version": "mvp-2.0-proposals-ranking",
+  "models": [
+    {
+      "id": "A",
+      "model": "YOUR_MODEL_A",
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKeyEnv": "MODEL_A_API_KEY",
+      "structuredOutput": "json_schema",
+      "tokenParameter": "max_completion_tokens",
+      "supportsTemperature": true,
+      "supportsReasoning": false,
+      "supportsSeed": false,
+      "inputPricePerMillion": null,
+      "outputPricePerMillion": null
+    },
+    {
+      "id": "B",
+      "model": "YOUR_MODEL_B",
+      "baseUrl": "https://YOUR_PROVIDER_B/v1",
+      "apiKeyEnv": "MODEL_B_API_KEY",
+      "structuredOutput": "json_object",
+      "tokenParameter": "max_tokens",
+      "supportsTemperature": true,
+      "supportsReasoning": false,
+      "supportsSeed": false,
+      "inputPricePerMillion": null,
+      "outputPricePerMillion": null
+    },
+    {
+      "id": "C",
+      "model": "YOUR_MODEL_C",
+      "baseUrl": "https://YOUR_PROVIDER_C/v1",
+      "apiKeyEnv": "MODEL_C_API_KEY",
+      "structuredOutput": "json_object",
+      "tokenParameter": "max_tokens",
+      "supportsTemperature": true,
+      "supportsReasoning": false,
+      "supportsSeed": false,
+      "inputPricePerMillion": null,
+      "outputPricePerMillion": null
+    },
+    {
+      "id": "D",
+      "model": "YOUR_MODEL_D",
+      "baseUrl": "https://YOUR_PROVIDER_D/v1",
+      "apiKeyEnv": "MODEL_D_API_KEY",
+      "structuredOutput": "json_object",
+      "tokenParameter": "max_tokens",
+      "supportsTemperature": true,
+      "supportsReasoning": false,
+      "supportsSeed": false,
+      "inputPricePerMillion": null,
+      "outputPricePerMillion": null
+    }
+  ],
+  "seats": [
+    {
+      "id": "A1",
+      "modelId": "A"
+    },
+    {
+      "id": "A2",
+      "modelId": "A"
+    },
+    {
+      "id": "B1",
+      "modelId": "B"
+    },
+    {
+      "id": "B2",
+      "modelId": "B"
+    },
+    {
+      "id": "C1",
+      "modelId": "C"
+    },
+    {
+      "id": "C2",
+      "modelId": "C"
+    },
+    {
+      "id": "D1",
+      "modelId": "D"
+    },
+    {
+      "id": "D2",
+      "modelId": "D"
+    }
+  ],
+  "roles": {
+    "dedup": "A",
+    "chair": "A"
+  },
+  "generation": {
+    "creative": {
+      "temperature": 1,
+      "reasoning_effort": "low",
+      "max_output_tokens": 131072
+    },
+    "dedup": {
+      "temperature": 0.1,
+      "reasoning_effort": "low",
+      "max_output_tokens": 131072
+    },
+    "decision": {
+      "temperature": 0.5,
+      "reasoning_effort": "low",
+      "max_output_tokens": 131072
+    },
+    "chair": {
+      "temperature": 0.3,
+      "reasoning_effort": "low",
+      "max_output_tokens": 131072
+    }
+  },
+  "retries": 2,
+  "timeoutMs": 120000,
+  "minimumCreativeRatio": 0.5,
+  "minimumDecisionRatio": 0.5
+}

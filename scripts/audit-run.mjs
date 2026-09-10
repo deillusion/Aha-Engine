@@ -1,0 +1,11 @@
+import { auditRun } from '../src/audit.mjs';
+import { readFile, writeFile } from 'node:fs/promises';
+const file = process.argv[2];
+if (!file) throw new Error('用法：node scripts/audit-run.mjs data/runs/<run-id>.json');
+const run = JSON.parse(await readFile(file, 'utf8'));
+const report = auditRun(run);
+const output = file.replace(/\.json$/, '.audit.json');
+await writeFile(output, JSON.stringify(report, null, 2) + '\n');
+if (run.final) await writeFile(file.replace(/\.json$/, '.answer.md'), run.final.text + '\n');
+console.log(JSON.stringify(report, null, 2));
+if (!report.passed) process.exitCode = 1;

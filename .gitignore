@@ -1,0 +1,33 @@
+# 环境变量与密钥配置（保留 .env.example 作为公开模板）
+.env
+*.env
+.env.*
+!.env.example
+
+# 本地个人配置（保留 config.example.json 作为公开模板）
+config.local.json
+
+# 本地运行时数据、测试历史与会话日志
+data/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 测试目录（本地保留，不纳入 Git 版本管理）
+tests/
+
+# 临时探索与探测脚本
+_tmp_*
+*_tmp_*
+scripts/_tmp_*
+
+# 依赖与环境
+node_modules/
+
+# 编辑器与操作系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
