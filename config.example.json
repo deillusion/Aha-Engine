@@ -2,95 +2,92 @@
   "version": "mvp-2.0-proposals-ranking",
   "models": [
     {
-      "id": "A",
-      "model": "YOUR_MODEL_A",
-      "baseUrl": "https://api.openai.com/v1",
-      "apiKeyEnv": "MODEL_A_API_KEY",
+      "id": "DEEPSEEK",
+      "model": "deepseek-flash",
+      "baseUrl": "https://api.deepseek.com",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "structuredOutput": "json_object",
+      "tokenParameter": "max_tokens",
+      "supportsTemperature": true,
+      "supportsReasoning": true,
+      "supportsSeed": false,
+      "inputPricePerMillion": null,
+      "outputPricePerMillion": null,
+      "protocol": "chat"
+    },
+    {
+      "id": "GLM",
+      "model": "GLM-5.3-Flash",
+      "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+      "apiKeyEnv": "GLM_API_KEY",
+      "structuredOutput": "json_object",
+      "tokenParameter": "max_tokens",
+      "supportsTemperature": true,
+      "supportsReasoning": true,
+      "supportsSeed": false,
+      "inputPricePerMillion": null,
+      "outputPricePerMillion": null,
+      "protocol": "chat",
+      "reasoningEffortMap": {
+        "medium": "high"
+      }
+    },
+    {
+      "id": "GEMINI",
+      "model": "gemini-3.7-flash",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "apiKeyEnv": "GEMINI_API_KEY",
       "structuredOutput": "json_schema",
-      "tokenParameter": "max_completion_tokens",
-      "supportsTemperature": true,
-      "supportsReasoning": false,
-      "supportsSeed": false,
-      "inputPricePerMillion": null,
-      "outputPricePerMillion": null
-    },
-    {
-      "id": "B",
-      "model": "YOUR_MODEL_B",
-      "baseUrl": "https://YOUR_PROVIDER_B/v1",
-      "apiKeyEnv": "MODEL_B_API_KEY",
-      "structuredOutput": "json_object",
       "tokenParameter": "max_tokens",
       "supportsTemperature": true,
-      "supportsReasoning": false,
+      "supportsReasoning": true,
       "supportsSeed": false,
       "inputPricePerMillion": null,
-      "outputPricePerMillion": null
-    },
-    {
-      "id": "C",
-      "model": "YOUR_MODEL_C",
-      "baseUrl": "https://YOUR_PROVIDER_C/v1",
-      "apiKeyEnv": "MODEL_C_API_KEY",
-      "structuredOutput": "json_object",
-      "tokenParameter": "max_tokens",
-      "supportsTemperature": true,
-      "supportsReasoning": false,
-      "supportsSeed": false,
-      "inputPricePerMillion": null,
-      "outputPricePerMillion": null
-    },
-    {
-      "id": "D",
-      "model": "YOUR_MODEL_D",
-      "baseUrl": "https://YOUR_PROVIDER_D/v1",
-      "apiKeyEnv": "MODEL_D_API_KEY",
-      "structuredOutput": "json_object",
-      "tokenParameter": "max_tokens",
-      "supportsTemperature": true,
-      "supportsReasoning": false,
-      "supportsSeed": false,
-      "inputPricePerMillion": null,
-      "outputPricePerMillion": null
+      "outputPricePerMillion": null,
+      "protocol": "chat",
+      "maxOutputTokens": 65536,
+      "maxConcurrent": 1,
+      "requestIntervalMs": 2500
     }
   ],
   "seats": [
     {
-      "id": "A1",
-      "modelId": "A"
+      "id": "Z1",
+      "modelId": "GLM"
     },
     {
-      "id": "A2",
-      "modelId": "A"
+      "id": "Z2",
+      "modelId": "GLM"
     },
     {
-      "id": "B1",
-      "modelId": "B"
+      "id": "Z3",
+      "modelId": "GLM"
     },
     {
-      "id": "B2",
-      "modelId": "B"
+      "id": "G1",
+      "modelId": "GEMINI"
     },
     {
-      "id": "C1",
-      "modelId": "C"
+      "id": "G2",
+      "modelId": "GEMINI"
     },
     {
-      "id": "C2",
-      "modelId": "C"
+      "id": "G3",
+      "modelId": "GEMINI"
     },
     {
-      "id": "D1",
-      "modelId": "D"
+      "id": "G4",
+      "modelId": "GEMINI"
     },
     {
-      "id": "D2",
-      "modelId": "D"
+      "id": "G5",
+      "modelId": "GEMINI"
     }
   ],
   "roles": {
-    "dedup": "A",
-    "chair": "A"
+    "dedup": "DEEPSEEK",
+    "chair": "DEEPSEEK",
+    "dealer": "DEEPSEEK"
   },
   "generation": {
     "creative": {
@@ -112,10 +109,16 @@
       "temperature": 0.3,
       "reasoning_effort": "low",
       "max_output_tokens": 131072
+    },
+    "dealer": {
+      "temperature": 0.2,
+      "reasoning_effort": "low",
+      "max_output_tokens": 1024
     }
   },
   "retries": 2,
-  "timeoutMs": 120000,
+  "timeoutMs": 180000,
   "minimumCreativeRatio": 0.5,
-  "minimumDecisionRatio": 0.5
+  "minimumDecisionRatio": 0.5,
+  "retryDelayMs": 5000
 }

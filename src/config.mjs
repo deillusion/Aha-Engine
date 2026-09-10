@@ -118,14 +118,21 @@ export async function saveConfig(root, newConfig) {
   return newConfig;
 }
 
-export async function loadConfig(root, mode = 'mock') {
+export async function loadConfig(root, mode = 'mock', { allowKeyless = false } = {}) {
   let config;
   if (mode === 'mock') {
     config = JSON.parse(await readFile(new URL('../config.example.json', import.meta.url), 'utf8'));
-    config.models = config.models.map(m => ({ ...m, model: `demo-${m.id.toLowerCase()}`, baseUrl: 'mock://local', apiKeyEnv: null }));
+    config.models = config.models.map(m => ({ ...m, baseUrl: 'mock://local', apiKeyEnv: null }));
   } else {
     try { config = JSON.parse(await readFile(`${root}/config.local.json`, 'utf8')); }
-    catch (e) { throw new Error(e.code === 'ENOENT' ? '请先在 WebUI 配置模型 API Key 或创建 config.local.json' : `配置无法读取：${e.message}`); }
+    catch (e) {
+      if (e.code === 'ENOENT') {
+        try { config = JSON.parse(await readFile(`${root}/config.example.json`, 'utf8')); }
+        catch { config = JSON.parse(await readFile(new URL('../config.example.json', import.meta.url), 'utf8')); }
+      } else {
+        throw new Error(`配置无法读取：${e.message}`);
+      }
+    }
   }
   // Accept older config files, but do not expose or freeze the retired stage.
   if (config.roles) {
@@ -136,11 +143,11 @@ export async function loadConfig(root, mode = 'mock') {
     delete config.generation.extractor;
     if (!config.generation.dealer) config.generation.dealer = structuredClone(config.generation.chair || config.generation.creative || { max_output_tokens: 1024, temperature: 0.2 });
   }
-  validateConfig(config, mode);
+  validateConfig(config, mode, { allowKeyless });
   return config;
 }
 
-export function validateConfig(c, mode) {
+export function validateConfig(c, mode, { allowKeyless = false } = {}) {
   assert(Array.isArray(c.models) && c.models.length > 0 && Array.isArray(c.seats) && c.seats.length > 0 && c.seats.length <= 32, '模型和席位不能为空，席位上限32');
   const ids = c.models.map(m => m.id);
   assert(new Set(ids).size === ids.length && new Set(c.seats.map(s => s.id)).size === c.seats.length, '模型或席位 ID 重复');
@@ -183,7 +190,7 @@ export function validateConfig(c, mode) {
       assert(typeof m.model === 'string' && m.model.trim() && !m.model.includes('YOUR_') && !m.baseUrl.includes('YOUR_'), '请替换模型或服务地址占位符');
     }
   }
-  if (mode !== 'mock') {
+  if (mode !== 'mock' && !allowKeyless) {
     const activeCount = c.models.filter(m => isModelAvailable(m, mode)).length;
     assert(activeCount > 0, '未配置任何可用的模型 API Key。请在 WebUI 中至少为一个模型配置 API Key（或配置对应环境变量）。');
   }

@@ -60,9 +60,22 @@ export async function createMcpApp({ dataDir = path.join(root, 'data/runs') } = 
       if (route === '/api/config' && req.method === 'GET') {
         let liveConfig = null, liveError = null, routingPreview = null;
         try {
-          liveConfig = await loadConfig(root, 'live');
-          const resolved = resolveActiveConfig(liveConfig, 'live');
-          routingPreview = resolved.routing;
+          liveConfig = await loadConfig(root, 'live', { allowKeyless: true });
+          try {
+            const resolved = resolveActiveConfig(liveConfig, 'live');
+            routingPreview = resolved.routing;
+          } catch {
+            const activeModels = liveConfig.models.filter(m => isModelAvailable(m, 'live'));
+            routingPreview = {
+              totalModels: liveConfig.models.length,
+              activeModels: activeModels.map(m => m.id),
+              inactiveModels: liveConfig.models.filter(m => !activeModels.includes(m.id)).map(m => m.id),
+              seatDistribution: {},
+              remappedSeats: [],
+              remappedRoles: {},
+              isAdaptive: false
+            };
+          }
         } catch (e) {
           liveError = e.message;
         }
@@ -109,7 +122,7 @@ export async function createMcpApp({ dataDir = path.join(root, 'data/runs') } = 
       if (route === '/api/models/test' && req.method === 'POST') {
         const { modelId, apiKey } = await body(req);
         let liveConfig;
-        try { liveConfig = await loadConfig(root, 'live'); } catch (e) { return json(400, { error: e.message }); }
+        try { liveConfig = await loadConfig(root, 'live', { allowKeyless: true }); } catch (e) { return json(400, { error: e.message }); }
         const model = liveConfig.models.find(m => m.id === modelId);
         if (!model) return json(404, { error: `未找到模型配置: ${modelId}` });
         const testModel = structuredClone(model);
