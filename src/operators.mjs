@@ -226,25 +226,14 @@ export function sampleMixedOperators(rng, genericPool = operators, domainOperato
   const genericEnabled = genericPool.filter(o => o.enabled);
   const genericFamilies = [...new Set(genericEnabled.map(o => o.family))].sort();
   const domainEnabled = domainOperators.filter(o => o.enabled !== false);
-
-  const slots = [
-    ...genericFamilies.map(family => ({ type: 'family', value: family })),
-    ...domainEnabled.map(op => ({ type: 'operator', value: op }))
-  ];
-
-  if (slots.length < 3) throw new Error('可用算子槽位不足 3 个');
-
+  if (genericFamilies.length < (domainEnabled.length ? 2 : 3)) throw new Error('可用通用算子族不足');
   const picked = [];
-  const pool = [...slots];
-  for (let i = 0; i < 3; i++) {
-    const idx = Math.floor(rng() * pool.length);
-    const slot = pool.splice(idx, 1)[0];
-    if (slot.type === 'family') {
-      const choices = genericEnabled.filter(o => o.family === slot.value);
-      picked.push(choices[Math.floor(rng() * choices.length)]);
-    } else {
-      picked.push(slot.value);
-    }
+  if (domainEnabled.length) picked.push(domainEnabled[Math.floor(rng() * domainEnabled.length)]);
+  const availableFamilies = [...genericFamilies];
+  while (picked.length < 3) {
+    const family = availableFamilies.splice(Math.floor(rng() * availableFamilies.length), 1)[0];
+    const choices = genericEnabled.filter(o => o.family === family);
+    picked.push(choices[Math.floor(rng() * choices.length)]);
   }
   return picked;
 }
@@ -252,4 +241,3 @@ export function sampleMixedOperators(rng, genericPool = operators, domainOperato
 export function sampleOperators(rng, pool = operators) {
   return sampleMixedOperators(rng, pool, []);
 }
-

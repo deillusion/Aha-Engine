@@ -45,9 +45,7 @@
       "inputPricePerMillion": null,
       "outputPricePerMillion": null,
       "protocol": "chat",
-      "maxOutputTokens": 65536,
-      "maxConcurrent": 1,
-      "requestIntervalMs": 2500
+      "maxOutputTokens": 65536
     }
   ],
   "seats": [
@@ -86,7 +84,7 @@
   ],
   "roles": {
     "dedup": "DEEPSEEK",
-    "chair": "DEEPSEEK",
+    "chair": "GEMINI",
     "dealer": "DEEPSEEK"
   },
   "generation": {

@@ -16,7 +16,7 @@ function completeProposal(c) {
   const parent = pool.length ? pool[index % pool.length] : null;
   return {
     title: '短循环验证方案 ' + (index + 1),
-    text: '## 完整机制\n' + ideas[index].join(' ') + '\n\n先给予有限资源，再提供互有代价的两种行动，公开行动后果，让参与者在下一轮调整选择。资源预算、可理解反馈和机会成本必须配套；去掉任何一项都无法验证取舍。\n\n## 条件与风险\n需要参与者能够理解规则；若连续两次无法解释选择后果，应停止扩充内容并调整反馈。\n\n## 本轮完善\nR' + c.round + '：用可撤销的小规模验证检查机制 ' + (index + 1) + '，记录策略变化与复述结果。\n\n*固定模拟方案，不是对当前输入问题的真实回答。*',
+    text: ideas[index].join(' ') + '\n\n例如，先给予有限资源和两种各有代价的行动，公开本轮后果，再让参与者根据结果调整下一轮选择。\n\n主要风险是参与者看不懂选择与后果的联系。先做一个可撤销的小规模试验；如果连续两次都看不到策略变化，就停止增加内容并修改反馈。\n\n*固定模拟方案，不是对当前输入问题的真实回答。*',
     parent_proposal_ids: parent ? [parent.proposal_id] : [],
     change_summary: parent ? '保留完整机制并补全本轮验证条件。' : '提出包含资源、行动、反馈及验证办法的完整机制。',
     point_refs: c.board?.points.slice(0, 2).map(p => ({ point_id: p.point_id, revision: p.current_revision })) ?? []
@@ -31,13 +31,13 @@ function mockThinking(c, phase) {
     return `深度思考中（Thinking Process）：\n1. 审视任务目标与硬约束：面对开放性机制设计，需确保规则在极简短循环内自闭环，且满足两周可验证、单局不超过10分钟的边界条件。\n2. 观察公共观点板（v${c.board?.version ?? 0}）：提取前序轮次中关于“有限资源分配”和“可见反馈”的核心沉淀。\n3. 激活算子【${opName} / ${opFamily}】：核心指引为“${opPrompt}”。常规思路倾向于通过正向奖励激励合作，但容易引发搭便车或同质化策略；若反向切入，将“行动代价”转化为“下一轮的选择空间”，会产生怎样的策略张力？\n4. 推演因果链路：\n   - 步骤一：给予每位参与者独立且有上限的决策预算；\n   - 步骤二：提供两种互有成本的行动路径，强迫参与者根据局势权衡眼前收益与未来灵活性；\n   - 步骤三：公开全场行动结果，通过动态环境参数形成策略博弈。\n5. 检验失效条件：若参与者无法直观建立“当前选择”与“下轮惩罚/收益”的因果关系，该机制将退化为随机乱试。必须在规则表述中前置反馈信号。\n6. 推演完成，输出核心观点及方案雏形。`;
   }
   if (phase === 'decision') {
-    return `深度思考中（Thinking Process）：\n1. 统揽第 1-5 轮沉淀的所有观点条目与候选方案池（共 ${(c.proposals || []).length} 个版本）。\n2. 核心命题检验：各席位提出的机制切入点各有优劣，本席位需补全闭环执行路径与落地验证手段。\n3. 补齐机制设计：梳理行动、资源、反馈的三位一体关系，确保无模糊推导。\n4. 设定验证办法与退出条件，完成第 6 轮方案完善。`;
+    return `思考中：\n1. 阅读前五轮的观点和 ${(c.proposals || []).length} 个候选版本。\n2. 找出仍未说清的规则、代价和玩家反馈。\n3. 把重复命名还原成实际差异。\n4. 补上验证办法与停止条件。`;
   }
   if (phase === 'chair') {
     return `深度思考中（Thinking Process）：\n1. 作为 Chair 全面审视待排序的 ${(c.proposals || []).length} 个完整方案版本。\n2. 比对硬约束检查：严格筛选是否满足时间与验证周期约束。\n3. 评估方案的新颖度、机制完整性与潜在落地风险。\n4. 综合权衡得出最终排名与裁决理由。`;
   }
   if (phase === 'dealer') {
-    return `深度思考中（Thinking Process）：\n1. 分析输入问题与硬约束的本质特征与卡点类型。\n2. 扫描全部 72 个待选特化认知算子，评估其结构契合度。\n3. 宁缺毋滥：按相关性挑选适配算子，无强相关的领域坚决不选，避免凑数干扰。`;
+    return `思考中：\n1. 判断问题的主要行业和交付类型。\n2. 按适用与不适用范围检查候选诊断视角。\n3. 只保留能帮助检查问题、但不会预设答案的视角。`;
   }
   return '';
 }
@@ -93,21 +93,22 @@ export async function mockCompletion(model, request, { signal, mockDelayMs = 180
   } else if (phase === 'dealer') {
     const catalog = c.catalog || [];
     const problem = c.problem || '';
-    // Select 2-4 matching operators based on simple keywords, or default to first 3
+    // Select a few matching diagnostic lenses. The catalog has already been
+    // filtered by task type, so numeric wording alone never enables math cards.
     let selected = [];
     if (problem.includes('玩') || problem.includes('游戏') || problem.includes('策略')) {
-      selected = ['exploit_canonization', 'negative_sum_thaw', 'sacrifice_as_engine', 'dynamic_catch_up'];
+      selected = ['flow_load_curve', 'feedback_traceability', 'visible_compounding', 'progression_runway'];
     } else if (problem.includes('商') || problem.includes('买') || problem.includes('钱') || problem.includes('客户')) {
-      selected = ['subsidy_arbitrage', 'parasitic_distribution', 'negative_cash_flow_inversion'];
-    } else if (problem.includes('证') || problem.includes('数') || problem.includes('命题')) {
-      selected = ['strengthen_induction', 'invariant_monovariant', 'extremal_principle'];
+      selected = ['value_recipient_map', 'willingness_to_pay', 'unit_economics_boundary'];
+    } else if (/(?:证明|证伪|定理|引理|归纳法|不变量)/.test(problem)) {
+      selected = ['assumption_domain', 'minimal_counterexample', 'proof_gap_audit'];
     } else {
       selected = catalog.slice(0, 3).map(o => o.operator_id);
     }
     const validIds = new Set(catalog.map(o => o.operator_id));
     const selected_operator_ids = selected.filter(id => validIds.has(id));
     value = {
-      reasoning: '模拟发卡节点：精准匹配问题特征，挑选高度相关的特化算子，非相关领域不强行凑数。',
+      reasoning: '模拟发卡节点：按适用范围选择行业通用诊断视角，不把具体解决方案当作算子。',
       selected_operator_ids
     };
   } else {

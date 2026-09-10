@@ -5,7 +5,7 @@ const percent = n => n == null ? '—' : `${Math.round(n * 100)}%`;
 const statusNames = { running: '运行中', completed: '已完成', failed: '失败', cancelled: '已停止', interrupted: '已中断' };
 // Keep the retired phase label for existing run archives.
 const phaseNames = { creative: '创意发言', extractor: '提取观点（旧版）', dedup: '去重合并', decision: '完善候选方案', chair: '方案排序', direct: '直接回答' };
-const state = { page: 'workspace', runs: [], run: null, config: null, activeId: null, tab: 'board', round: null, filter: '', fingerprint: '', draft: { problem: '', constraints: '', mode: 'live', experiment: 'treatment', seed: 20260909, use_operators: true } };
+const state = { page: 'workspace', runs: [], run: null, config: null, activeId: null, tab: 'board', round: null, filter: '', fingerprint: '', draft: { problem: '', constraints: '', mode: 'live', experiment: 'treatment', seed: 20260909, use_operators: true, use_domain_operators: false } };
 let toastTimer, polling = false, loading = false;
 async function api(path, options = {}) { const res = await fetch(path, options); const data = await res.json(); if (!res.ok) throw new Error(data.error || '请求失败'); return data; }
 function toast(text) { $('#toast').textContent = text; $('#toast').classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.add('hidden'), 6000); }
@@ -40,7 +40,10 @@ function renderNew() {
     <div class="form-body"><div class="field"><label class="field-label" for="problem">你想解决什么问题？<button type="button" class="example-button" id="load-example">试试一个玩法设计问题 ↗</button></label><textarea id="problem" name="problem" required maxlength="20000" placeholder="例如：设计一个轻量的合作玩法，让玩家在每一局中都能做出有意义的选择……">${escape(d.problem)}</textarea></div>
     <div class="field"><label class="field-label" for="constraints">必须遵守的约束 <small>选填 · 每行一条</small></label><textarea id="constraints" name="constraints" placeholder="单局不超过 10 分钟&#10;两周内可以验证核心机制">${escape(d.constraints)}</textarea></div>
     <div class="form-row"><div><label class="field-label" for="experiment">实验方案</label><select id="experiment" name="experiment">${Object.entries(state.config.experiments).map(([id, e]) => `<option value="${id}" ${id === d.experiment ? 'selected' : ''}>${escape(e.name)}</option>`).join('')}</select></div><div class="seed-field"><label class="field-label" for="seed">随机种子</label><input id="seed" name="seed" type="number" min="0" max="2147483647" value="${d.seed}" required></div></div>
-    <label class="check-line"><input type="checkbox" id="use-operators" name="use_operators" ${d.use_operators ? 'checked' : ''}> 使用随机思维刺激 <span class="muted">· 关闭可进行消融对照</span></label>
+    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:6px">
+      <label class="check-line"><input type="checkbox" id="use-operators" name="use_operators" ${d.use_operators ? 'checked' : ''}> 使用随机思维刺激 <span class="muted">· 关闭可进行消融对照</span></label>
+      <label class="check-line"><input type="checkbox" id="use-domain-operators" name="use_domain_operators" ${d.use_domain_operators ? 'checked' : ''}> 启用行业诊断视角 <span class="muted">· Dealer 按适用范围选择，默认关闭</span></label>
+    </div>
     ${!state.config.liveConfig ? `
       <div class="info-box stack-gap" style="background:#fff8e6;border:1px solid #f2da99;color:#7a5a15;display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-radius:8px">
         <div>
@@ -871,7 +874,7 @@ async function openRun(id) {
   }
   finally { loading = false; }
 }
-function saveDraft() { if (!$('#run-form')) return; for (const key of ['problem', 'constraints', 'experiment']) { const el = $(`#${key}`); if (el) state.draft[key] = el.value; } const seedEl = $('#seed'); if (seedEl) state.draft.seed = Number(seedEl.value); const opEl = $('#use-operators'); if (opEl) state.draft.use_operators = opEl.checked; state.draft.mode = 'live'; }
+function saveDraft() { if (!$('#run-form')) return; for (const key of ['problem', 'constraints', 'experiment']) { const el = $(`#${key}`); if (el) state.draft[key] = el.value; } const seedEl = $('#seed'); if (seedEl) state.draft.seed = Number(seedEl.value); const opEl = $('#use-operators'); if (opEl) state.draft.use_operators = opEl.checked; const domainOpEl = $('#use-domain-operators'); if (domainOpEl) state.draft.use_domain_operators = domainOpEl.checked; state.draft.mode = 'live'; }
 function newRun() { typingStreams.clear(); disconnectEventSource(); saveDraft(); state.page = 'workspace'; state.run = null; location.hash = ''; render(); }
 $('#new-run').addEventListener('click', newRun);
 for (const page of ['workspace', 'compare', 'config']) $(`#${page}-nav`).addEventListener('click', () => { saveDraft(); state.page = page; render(); });

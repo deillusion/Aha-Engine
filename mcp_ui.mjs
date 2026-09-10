@@ -165,7 +165,8 @@ export async function createMcpApp({ dataDir = path.join(root, 'data/runs') } = 
             seed: input.seed ?? Math.floor(Math.random() * 1000000),
             mode: input.mode || 'mock',
             experiment: input.experiment || 'single',
-            use_operators: input.use_operators !== false
+            use_operators: input.use_operators !== false,
+            use_domain_operators: input.use_domain_operators === true
           }, config);
 
           active.run = run;

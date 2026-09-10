@@ -74,6 +74,11 @@ const TOOLS = [
           enum: ['live', 'mock'],
           description: "运行模式：'live'（调用真实配置的大模型），'mock'（离线模拟演示，零费用）",
           default: 'live'
+        },
+        use_domain_operators: {
+          type: 'boolean',
+          description: "是否启用行业通用诊断视角。启用后 Dealer 按适用范围选择，且每个席位最多抽取一张。默认 false",
+          default: false
         }
       },
       required: ['problem']
@@ -91,7 +96,8 @@ async function handleToolCall(id, name, args) {
     constraints = [],
     context_summary = '',
     experiment = 'single',
-    mode = 'live'
+    mode = 'live',
+    use_domain_operators = false
   } = args || {};
 
   // Strict caller distillation enforcement (Token flood firewall)
@@ -152,7 +158,8 @@ async function handleToolCall(id, name, args) {
     seed: Math.floor(Math.random() * 1000000),
     mode,
     experiment: ['single', 'treatment'].includes(experiment) ? experiment : 'single',
-    use_operators: true
+    use_operators: true,
+    use_domain_operators: use_domain_operators === true
   };
 
   const run = createRun(runInput, config);

@@ -39,6 +39,10 @@ export function validateSchema(value, schema, path = '$') {
 }
 export function validateProposal(proposal, board, available) {
   assert(proposal.title.trim() && proposal.text.trim() && proposal.change_summary.trim(), '方案标题、完整正文及变更说明不能为空');
+  assert([...proposal.title.trim()].length <= 32, '方案标题最多32个字');
+  assert(!/[（(][A-Za-z][^）)]*[）)]/.test(proposal.title), '方案标题不要添加英文副标题');
+  assert([...proposal.text].length <= 3200, '单个方案正文最多3200字');
+  assert(!/[【](?:方案目标|完整机制|组件配合|必要条件|取舍与失效条件|验证办法)[】]/.test(proposal.text), '方案正文不要使用公文模板标题');
   assert(new Set(proposal.parent_proposal_ids).size === proposal.parent_proposal_ids.length, '父方案引用重复');
   for (const id of proposal.parent_proposal_ids) assert(available.some(p => p.proposal_id === id), '父方案不在本次可读快照中');
   assert(new Set(proposal.point_refs.map(p => p.point_id)).size === proposal.point_refs.length, '方案观点引用重复');
@@ -77,11 +81,11 @@ export function validateDirect(data) {
 export function validateDealer(data, availableOperatorIds = null) {
   validateSchema(data, schemas.dealer);
   assert(Array.isArray(data.selected_operator_ids), 'selected_operator_ids 必须为数组');
-  assert(data.selected_operator_ids.length <= 8, '最多选择 8 个特化算子');
+  assert(data.selected_operator_ids.length <= 4, '最多选择 4 个行业诊断算子');
   const seen = new Set();
   for (const id of data.selected_operator_ids) {
-    if (availableOperatorIds) assert(availableOperatorIds.has(id), `未知的特化算子 ID: ${id}`);
-    assert(!seen.has(id), `特化算子 ID 重复: ${id}`);
+    if (availableOperatorIds) assert(availableOperatorIds.has(id), `未知的行业诊断算子 ID: ${id}`);
+    assert(!seen.has(id), `行业诊断算子 ID 重复: ${id}`);
     seen.add(id);
   }
 }

@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { emptyBoard, applyPlan, validatePlan } from './board.mjs';
 import { operators, OPERATOR_VERSION, random, sampleOperators, sampleMixedOperators } from './operators.mjs';
 import { domainCatalog, domainOperatorsMap } from './domain_operators.mjs';
+import { eligibleDomainCatalog } from './domain_routing.mjs';
 import { messages, PROMPT_VERSION } from './prompts.mjs';
 import { validateCreative, validateRanking, validateDirect, validateMemo, validateDealer, typeLabels } from './schema.mjs';
 import { materializeProposals, proposalText, rankedFinal } from './proposals.mjs';
@@ -16,8 +17,8 @@ export const EXPERIMENTS = {
   single: { name: '单轮多席位', description: '所有席位独立生成完整方案一次，再由 Chair 排序' },
   direct: { name: '单模型直接回答', description: '使用相同模型配置直接回答一次，不经过 Chair 排序' }
 };
-export function expectedCalls(experiment, seats, useOperators = true) {
-  const dealerCall = useOperators && ['treatment', 'independent', 'single'].includes(experiment) ? 1 : 0;
+export function expectedCalls(experiment, seats, useOperators = true, useDomainOperators = false) {
+  const dealerCall = useOperators && useDomainOperators && ['treatment', 'independent', 'single'].includes(experiment) ? 1 : 0;
   return experiment === 'direct' ? 1 : experiment === 'single' ? seats + 1 + dealerCall : 6 * seats + 6 + dealerCall;
 }
 export function createRun(input, rawConfig) {
@@ -26,8 +27,9 @@ export function createRun(input, rawConfig) {
   if (!Object.hasOwn(EXPERIMENTS, input.experiment) || !['mock', 'live'].includes(input.mode)) throw new Error('未知实验或运行模式');
   if (!Number.isInteger(input.seed) || input.seed < 0 || input.seed > 2147483647) throw new Error('种子须为0–2147483647的整数');
   if (typeof input.use_operators !== 'boolean') throw new Error('use_operators 须为布尔值');
+  const use_domain_operators = input.use_domain_operators === true;
   const { config, routing } = resolveActiveConfig(rawConfig, input.mode);
-  return { workflow_version: 2, id: `run-${Date.now()}-${randomUUID().slice(0, 8)}`, problem: input.problem.trim(), constraints: input.constraints.filter(c => c.trim()), seed: input.seed, mode: input.mode, experiment: input.experiment, use_operators: input.use_operators, config: structuredClone(config), routing, prompt_version: PROMPT_VERSION, operator_version: OPERATOR_VERSION, operator_pool: structuredClone(operators), domain_operators: [], dealer_decision: null, status: 'running', phase: '准备', round: 0, started_at: new Date().toISOString(), completed_at: null, assignments: [], raw_responses: [], candidates: [], operations: [], snapshots: [emptyBoard()], proposals: [], proposal_snapshots: [{ version: 0, proposal_ids: [] }], memos: [], final: null, calls: [], events: [], round_metrics: [], metrics: { expected_calls: expectedCalls(input.experiment, config.seats.length, input.use_operators), attempted_calls: 0 } };
+  return { workflow_version: 2, id: `run-${Date.now()}-${randomUUID().slice(0, 8)}`, problem: input.problem.trim(), constraints: input.constraints.filter(c => c.trim()), seed: input.seed, mode: input.mode, experiment: input.experiment, use_operators: input.use_operators, use_domain_operators, config: structuredClone(config), routing, prompt_version: PROMPT_VERSION, operator_version: OPERATOR_VERSION, operator_pool: structuredClone(operators), domain_operators: [], dealer_decision: null, status: 'running', phase: '准备', round: 0, started_at: new Date().toISOString(), completed_at: null, assignments: [], raw_responses: [], candidates: [], operations: [], snapshots: [emptyBoard()], proposals: [], proposal_snapshots: [{ version: 0, proposal_ids: [] }], memos: [], final: null, calls: [], events: [], round_metrics: [], metrics: { expected_calls: expectedCalls(input.experiment, config.seats.length, input.use_operators, use_domain_operators), attempted_calls: 0 } };
 }
 function ratio(a, b) { return b ? a / b : null; }
 export function calculateMetrics(run) {
@@ -37,7 +39,7 @@ export function calculateMetrics(run) {
   const board = run.snapshots.at(-1);
   const adopted = (run.final?.adopted_points ?? []).map(ref => board.points.find(p => p.point_id === ref.point_id)).filter(Boolean);
   const end = run.completed_at ? Date.parse(run.completed_at) : Date.now();
-  const metrics = { expected_calls: expectedCalls(run.experiment, run.config.seats.length, run.use_operators), attempted_calls: run.calls.length, completed_calls: finished.filter(c => c.status === 'completed').length, failed_attempts: finished.filter(c => c.status === 'failed').length, input_tokens: withUsage.length ? withUsage.reduce((n, c) => n + c.usage.prompt_tokens, 0) : null, output_tokens: withUsage.length ? withUsage.reduce((n, c) => n + c.usage.completion_tokens, 0) : null, usage_coverage: ratio(withUsage.length, finished.length), estimated_cost: run.mode === 'mock' ? 0 : priced.length ? priced.reduce((n, c) => n + c.estimated_cost, 0) : null, cost_complete: run.mode === 'mock' || (finished.length > 0 && priced.length === finished.length), duration_ms: end - Date.parse(run.started_at), board_points: board.points.length, board_characters: board.rendered_text.length, adopted_points: adopted.length, late_round_value: ratio(adopted.filter(p => p.first_seen_round >= 4).length, adopted.length), late_revision_value: ratio(adopted.filter(p => p.revisions.some(r => r.round >= 4)).length, adopted.length), adoption_by_round: [1, 2, 3, 4, 5].map(round => ({ round, born: board.points.filter(p => p.first_seen_round === round).length, adopted: adopted.filter(p => p.first_seen_round === round).length, adopted_with_revision_in_round: adopted.filter(p => p.revisions.some(r => r.round === round)).length })) };
+  const metrics = { expected_calls: expectedCalls(run.experiment, run.config.seats.length, run.use_operators, run.use_domain_operators), attempted_calls: run.calls.length, completed_calls: finished.filter(c => c.status === 'completed').length, failed_attempts: finished.filter(c => c.status === 'failed').length, input_tokens: withUsage.length ? withUsage.reduce((n, c) => n + c.usage.prompt_tokens, 0) : null, output_tokens: withUsage.length ? withUsage.reduce((n, c) => n + c.usage.completion_tokens, 0) : null, usage_coverage: ratio(withUsage.length, finished.length), estimated_cost: run.mode === 'mock' ? 0 : priced.length ? priced.reduce((n, c) => n + c.estimated_cost, 0) : null, cost_complete: run.mode === 'mock' || (finished.length > 0 && priced.length === finished.length), duration_ms: end - Date.parse(run.started_at), board_points: board.points.length, board_characters: board.rendered_text.length, adopted_points: adopted.length, late_round_value: ratio(adopted.filter(p => p.first_seen_round >= 4).length, adopted.length), late_revision_value: ratio(adopted.filter(p => p.revisions.some(r => r.round >= 4)).length, adopted.length), adoption_by_round: [1, 2, 3, 4, 5].map(round => ({ round, born: board.points.filter(p => p.first_seen_round === round).length, adopted: adopted.filter(p => p.first_seen_round === round).length, adopted_with_revision_in_round: adopted.filter(p => p.revisions.some(r => r.round === round)).length })) };
   if (run.workflow_version === 2) {
     for (const key of ['adopted_points', 'late_round_value', 'late_revision_value', 'adoption_by_round']) delete metrics[key];
     const count = run.proposals.length;
@@ -118,7 +120,8 @@ export async function executeRun(run, { store, signal, provider, mockDelayMs = 1
     await flush();
   }
   async function creative(round, board, proposals, rng) {
-    const assignments = config.seats.map(seat => ({ round, seat_id: seat.id, operators: run.use_operators ? sampleMixedOperators(rng, run.operator_pool, run.domain_operators) : [] }));
+    const activeDomainOps = run.use_domain_operators ? run.domain_operators : [];
+    const assignments = config.seats.map(seat => ({ round, seat_id: seat.id, operators: run.use_operators ? sampleMixedOperators(rng, run.operator_pool, activeDomainOps) : [] }));
     run.assignments.push(...assignments);
     await emit('创意发言', round, `R${round}：${config.seats.length} 个席位读取 board v${board.version}`);
     const results = await Promise.allSettled(config.seats.map(async (seat, seatIndex) => {
@@ -158,23 +161,27 @@ export async function executeRun(run, { store, signal, provider, mockDelayMs = 1
     }
     let board = emptyBoard();
     const rng = random(run.seed);
-    if (run.use_operators && run.experiment !== 'direct') {
-      await emit('发卡节点', 0, `发卡节点评估问题，从 ${domainCatalog.length} 个领域特化算子中挑选匹配卡片（最多 8 张）`);
-      const availableIds = new Set(domainCatalog.map(o => o.operator_id));
+    if (run.use_operators && run.use_domain_operators && run.experiment !== 'direct') {
+      const eligibleCatalog = eligibleDomainCatalog(domainCatalog, run.problem, run.constraints);
+      await emit('发卡节点', 0, `发卡节点评估问题，从 ${eligibleCatalog.length} 个行业通用诊断视角中挑选匹配卡片（最多 4 张）`);
+      const availableIds = new Set(eligibleCatalog.map(o => o.operator_id));
       const onStreamChunk = chunk => {
         if (chunk.type === 'thinking') run.dealer_thinking = (run.dealer_thinking || '') + chunk.text;
       };
       try {
         const dealerModel = config.roles.dealer || config.roles.chair || config.seats[0].modelId;
-        const decision = await invoke('dealer', dealerModel, { round: 0, catalog: domainCatalog }, d => validateDealer(d, availableIds), 'dealer', onStreamChunk);
+        const decision = await invoke('dealer', dealerModel, { round: 0, catalog: eligibleCatalog, problem: run.problem, constraints: run.constraints }, d => validateDealer(d, availableIds), 'dealer', onStreamChunk);
         run.dealer_decision = decision;
         const selected = (decision.selected_operator_ids || []).map(id => domainOperatorsMap.get(id)).filter(Boolean);
         run.domain_operators = selected;
-        await emit('发卡完成', 0, `发卡节点选中 ${selected.length} 张特化算子：${selected.map(s => s.name).join('、') || '无（采用纯通用算子推演）'}`);
+        await emit('发卡完成', 0, `发卡节点选中 ${selected.length} 张行业诊断视角：${selected.map(s => s.name).join('、') || '无（采用纯通用算子推演）'}`);
       } catch (err) {
         run.domain_operators = [];
         await emit('发卡降级', 0, `发卡节点执行异常，降级为纯通用算子模式：${err.message}`);
       }
+    } else if (run.use_operators && !run.use_domain_operators && run.experiment !== 'direct') {
+      run.domain_operators = [];
+      await emit('发卡跳过', 0, '已关闭行业算子，仅从通用认知算子库抽卡推演');
     }
     if (run.experiment === 'single') {
       await creative(1, board, [], rng);
