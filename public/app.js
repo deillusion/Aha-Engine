@@ -5,7 +5,7 @@ const percent = n => n == null ? '—' : `${Math.round(n * 100)}%`;
 const statusNames = { running: '运行中', completed: '已完成', failed: '失败', cancelled: '已停止', interrupted: '已中断' };
 // Keep the retired phase label for existing run archives.
 const phaseNames = { creative: '创意发言', extractor: '提取观点（旧版）', dedup: '去重合并', decision: '完善候选方案', chair: '方案排序', direct: '直接回答' };
-const state = { page: 'workspace', runs: [], run: null, config: null, activeId: null, tab: 'board', round: null, filter: '', fingerprint: '', draft: { problem: '', constraints: '', mode: 'live', experiment: 'treatment', seed: 20260909, use_operators: true, use_domain_operators: false } };
+const state = { page: 'workspace', runs: [], run: null, config: null, activeId: null, tab: 'board', round: null, filter: '', fingerprint: '', draft: { problem: '', constraints: '', mode: 'live', experiment: 'treatment', seed: 20260909, max_mechanisms: 3, use_operators: true, use_domain_operators: false } };
 let toastTimer, polling = false, loading = false;
 async function api(path, options = {}) { const res = await fetch(path, options); const data = await res.json(); if (!res.ok) throw new Error(data.error || '请求失败'); return data; }
 function toast(text) { $('#toast').textContent = text; $('#toast').classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.add('hidden'), 6000); }
@@ -62,7 +62,7 @@ function renderNew() {
     <div class="workspace-grid"><div><form id="run-form" class="card"><div class="card-head"><h2><span class="step">01</span> 定义这次讨论</h2><small>从一个值得探索的问题开始</small></div>
     <div class="form-body"><div class="field"><label class="field-label" for="problem">你想解决什么问题？<button type="button" class="example-button" id="load-example">试试一个玩法设计问题 ↗</button></label><textarea id="problem" name="problem" required maxlength="20000" placeholder="例如：设计一个轻量的合作玩法，让玩家在每一局中都能做出有意义的选择……">${escape(d.problem)}</textarea></div>
     <div class="field"><label class="field-label" for="constraints">必须遵守的约束 <small>选填 · 每行一条</small></label><textarea id="constraints" name="constraints" placeholder="单局不超过 10 分钟&#10;两周内可以验证核心机制">${escape(d.constraints)}</textarea></div>
-    <div class="form-row"><div><label class="field-label" for="experiment">实验方案</label><select id="experiment" name="experiment">${Object.entries(state.config.experiments).map(([id, e]) => `<option value="${id}" ${id === d.experiment ? 'selected' : ''}>${escape(e.name)}</option>`).join('')}</select></div><div class="seed-field"><label class="field-label" for="seed">随机种子</label><input id="seed" name="seed" type="number" min="0" max="2147483647" value="${d.seed}" required></div></div>
+    <div class="form-row form-row-3"><div><label class="field-label" for="experiment">实验方案</label><select id="experiment" name="experiment">${Object.entries(state.config.experiments).map(([id, e]) => `<option value="${id}" ${id === d.experiment ? 'selected' : ''}>${escape(e.name)}</option>`).join('')}</select></div><div class="seed-field"><label class="field-label" for="seed">随机种子</label><input id="seed" name="seed" type="number" min="0" max="2147483647" value="${d.seed}" required></div><div class="seed-field"><label class="field-label" for="max-mechanisms" title="每个方案装配的核心原子机制上限（防齐德龙东强缝合怪）">机制上限</label><input id="max-mechanisms" name="max_mechanisms" type="number" min="1" max="10" value="${d.max_mechanisms ?? 3}" required></div></div>
     <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:6px">
       <label class="check-line"><input type="checkbox" id="use-operators" name="use_operators" ${d.use_operators ? 'checked' : ''}> 使用随机思维刺激 <span class="muted">· 关闭可进行消融对照</span></label>
       <label class="check-line"><input type="checkbox" id="use-domain-operators" name="use_domain_operators" ${d.use_domain_operators ? 'checked' : ''}> 启用行业诊断视角 <span class="muted">· Dealer 按适用范围选择，默认关闭</span></label>
@@ -391,7 +391,8 @@ function renderRun() {
             `).join('')}
             ${(resp.proposals || []).map(p => `
               <div class="seat-proposal-mini">
-                <b>📜 机制提案：${escape(p.title)}</b>
+                <b>📜 方案：${escape(p.title)}</b>
+                ${Array.isArray(p.mechanisms) && p.mechanisms.length ? `<div style="font-size:9.5px;color:#3b6546;margin:2px 0 4px">⚙️ ${escape(p.mechanisms.join(' + '))}</div>` : ''}
                 <div style="font-size:10px;color:#60735b">${escape(p.change_summary || '')}</div>
               </div>
             `).join('')}
@@ -603,6 +604,11 @@ function renderRun() {
                 </div>
                 ${p ? `<span class="small-note">席位 ${escape(p.seat_id)} · R${p.round}</span>` : ''}
               </div>
+              ${Array.isArray(p?.mechanisms) && p.mechanisms.length ? `
+                <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:2px 0 10px">
+                  <span class="small-note" style="color:#4a6147;font-weight:600">采用机制：</span>
+                  ${p.mechanisms.map(m => `<span class="chip" style="background:#eaf2e8;color:#2b5438;border:1px solid #d0e2ce;font-weight:600">⚙️ ${escape(m)}</span>`).join('')}
+                </div>` : ''}
               <div style="background:#f4f7f1;border-radius:6px;padding:9px 12px;margin-bottom:12px;font-size:12px;color:#455944">
                 <strong>💡 排序理由：</strong>${escape(row.reason)}
               </div>
@@ -1790,7 +1796,7 @@ async function openRun(id) {
   }
   finally { loading = false; }
 }
-function saveDraft() { if (!$('#run-form')) return; for (const key of ['problem', 'constraints', 'experiment']) { const el = $(`#${key}`); if (el) state.draft[key] = el.value; } const seedEl = $('#seed'); if (seedEl) state.draft.seed = Number(seedEl.value); const opEl = $('#use-operators'); if (opEl) state.draft.use_operators = opEl.checked; const domainOpEl = $('#use-domain-operators'); if (domainOpEl) state.draft.use_domain_operators = domainOpEl.checked; state.draft.mode = 'live'; }
+function saveDraft() { if (!$('#run-form')) return; for (const key of ['problem', 'constraints', 'experiment']) { const el = $(`#${key}`); if (el) state.draft[key] = el.value; } const seedEl = $('#seed'); if (seedEl) state.draft.seed = Number(seedEl.value); const mechEl = $('#max-mechanisms'); if (mechEl) state.draft.max_mechanisms = Number(mechEl.value) || 3; const opEl = $('#use-operators'); if (opEl) state.draft.use_operators = opEl.checked; const domainOpEl = $('#use-domain-operators'); if (domainOpEl) state.draft.use_domain_operators = domainOpEl.checked; state.draft.mode = 'live'; }
 function newRun() { typingStreams.clear(); disconnectEventSource(); saveDraft(); state.draft.customSeats = null; state.draft.customRoles = null; state.page = 'workspace'; state.run = null; location.hash = ''; render(); }
 $('#new-run').addEventListener('click', newRun);
 for (const page of ['workspace', 'compare', 'config']) $(`#${page}-nav`).addEventListener('click', () => { saveDraft(); state.page = page; render(); });
@@ -1824,6 +1830,7 @@ document.addEventListener('submit', async e => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...d,
+        max_mechanisms: Number(d.max_mechanisms) || 3,
         seats: sessionSeats,
         roles: sessionRoles,
         mode: 'live',

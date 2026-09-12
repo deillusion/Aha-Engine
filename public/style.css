@@ -163,3 +163,5 @@ details.home-roles-details summary:hover{background:#e9f0e4}
 .home-role-field label{font-size:10px;font-weight:600;color:#5a6d59}
 .home-role-field select{height:28px;padding:2px 6px;font-size:11px;border:1px solid #d0dcce;border-radius:4px;background:#fff;color:var(--ink)}
 .home-seats-note{font-size:9.5px;color:#879682;line-height:1.5;margin-top:10px;padding-top:7px;border-top:1px dashed #dfe6dc}
+.form-row.form-row-3{display:grid;grid-template-columns:1fr 110px 130px;gap:14px}
+@media(max-width:650px){.form-row.form-row-3{grid-template-columns:1fr}}

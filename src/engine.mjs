@@ -28,6 +28,9 @@ export function createRun(input, rawConfig) {
   if (!Number.isInteger(input.seed) || input.seed < 0 || input.seed > 2147483647) throw new Error('种子须为0–2147483647的整数');
   if (typeof input.use_operators !== 'boolean') throw new Error('use_operators 须为布尔值');
   const use_domain_operators = input.use_domain_operators === true;
+  const max_mechanisms = Number.isInteger(input.max_mechanisms) && input.max_mechanisms >= 1
+    ? input.max_mechanisms
+    : (Number.isInteger(rawConfig.default_max_mechanisms) && rawConfig.default_max_mechanisms >= 1 ? rawConfig.default_max_mechanisms : 3);
 
   const effectiveConfig = structuredClone(rawConfig);
   if (Array.isArray(input.seats) && input.seats.length > 0) {
@@ -39,7 +42,7 @@ export function createRun(input, rawConfig) {
   validateConfig(effectiveConfig, input.mode, { allowKeyless: true });
 
   const { config, routing } = resolveActiveConfig(effectiveConfig, input.mode);
-  return { workflow_version: 2, id: `run-${Date.now()}-${randomUUID().slice(0, 8)}`, problem: input.problem.trim(), constraints: input.constraints.filter(c => c.trim()), seed: input.seed, mode: input.mode, experiment: input.experiment, use_operators: input.use_operators, use_domain_operators, config: structuredClone(config), routing, prompt_version: PROMPT_VERSION, operator_version: OPERATOR_VERSION, domain_operator_version: DOMAIN_OPERATORS_VERSION, operator_pool: structuredClone(operators), domain_operators: [], dealer_decision: null, status: 'running', phase: '准备', round: 0, started_at: new Date().toISOString(), completed_at: null, assignments: [], raw_responses: [], candidates: [], operations: [], snapshots: [emptyBoard()], proposals: [], proposal_snapshots: [{ version: 0, proposal_ids: [] }], memos: [], final: null, calls: [], events: [], round_metrics: [], metrics: { expected_calls: expectedCalls(input.experiment, config.seats.length, input.use_operators, use_domain_operators), attempted_calls: 0 } };
+  return { workflow_version: 2, id: `run-${Date.now()}-${randomUUID().slice(0, 8)}`, problem: input.problem.trim(), constraints: input.constraints.filter(c => c.trim()), seed: input.seed, mode: input.mode, experiment: input.experiment, use_operators: input.use_operators, use_domain_operators, max_mechanisms, config: structuredClone(config), routing, prompt_version: PROMPT_VERSION, operator_version: OPERATOR_VERSION, domain_operator_version: DOMAIN_OPERATORS_VERSION, operator_pool: structuredClone(operators), domain_operators: [], dealer_decision: null, status: 'running', phase: '准备', round: 0, started_at: new Date().toISOString(), completed_at: null, assignments: [], raw_responses: [], candidates: [], operations: [], snapshots: [emptyBoard()], proposals: [], proposal_snapshots: [{ version: 0, proposal_ids: [] }], memos: [], final: null, calls: [], events: [], round_metrics: [], metrics: { expected_calls: expectedCalls(input.experiment, config.seats.length, input.use_operators, use_domain_operators), attempted_calls: 0 } };
 }
 function ratio(a, b) { return b ? a / b : null; }
 export function calculateMetrics(run) {
@@ -177,7 +180,7 @@ export async function executeRun(run, { store, signal, provider, mockDelayMs = 1
           for (const item of (Array.isArray(value?.contributions) ? value.contributions : [])) {
             if (item !== null && typeof item === 'object') item.type = canonicalContributionType(item.type);
           }
-          validateCreative(value, board, proposals, run.experiment === 'single');
+          validateCreative(value, board, proposals, run.experiment === 'single', run.max_mechanisms);
         };
         const val = await invoke('creative', seat.modelId, { board, proposals, round, operators: assignments[seatIndex].operators, seatIndex }, validateAndCanonicalize, seat.id, onStreamChunk);
         // A stale revision is realigned to the board's current one during validation. Record it, then
@@ -303,7 +306,7 @@ export async function executeRun(run, { store, signal, provider, mockDelayMs = 1
           const onStreamChunk = chunk => {
             if (chunk.type === 'thinking') memo.thinking = (memo.thinking || '') + chunk.text;
           };
-          const value = await invoke('decision', seat.modelId, { round: 6, board, proposals: available, seatIndex }, v => validateMemo(v, board, available), seat.id, onStreamChunk);
+          const value = await invoke('decision', seat.modelId, { round: 6, board, proposals: available, seatIndex }, v => validateMemo(v, board, available, run.max_mechanisms), seat.id, onStreamChunk);
           const aligned = alignedPointRefs(value.proposals);
           if (aligned.length) memo.aligned_point_refs = aligned;
           const droppedParents = value.proposals.flatMap(p => (p.dropped_parent_proposal_ids ?? []).map(id => ({ proposal_title: p.title, parent_proposal_id: id })));

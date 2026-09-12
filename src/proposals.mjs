@@ -13,15 +13,17 @@ export function materializeProposals(items, round, seatId, phase) {
 }
 
 export function proposalContext(proposals) {
-  // Author identity and support counts are omitted from shared model inputs.
-  return proposals.map(({ proposal_id, title, text, parent_proposal_ids, change_summary, point_refs }) => ({
-    proposal_id, title, text, parent_proposal_ids, change_summary, point_refs
+  // Author identity, support counts and bulky text bodies are omitted from shared inputs
+  // to avoid attention sinks and multi-stage chimera contagion across rounds.
+  return proposals.map(({ proposal_id, title, mechanisms, parent_proposal_ids, change_summary, point_refs }) => ({
+    proposal_id, title, mechanisms: Array.isArray(mechanisms) ? mechanisms : [], parent_proposal_ids, change_summary, point_refs
   }));
 }
 
 export function proposalText(p) {
   const title = String(p.title ?? '').replace(/[\r\n]+/g, ' ');
-  return `## ${title}\n\n方案 ID：${p.proposal_id}\n\n来源方案：${p.parent_proposal_ids.join('、') || '新方案'}\n\n变更说明：${p.change_summary ?? ''}\n\n${p.text}`;
+  const mechs = Array.isArray(p.mechanisms) && p.mechanisms.length ? `\n\n采用机制：${p.mechanisms.join(' + ')}` : '';
+  return `## ${title}\n\n方案 ID：${p.proposal_id}${mechs}\n\n来源方案：${p.parent_proposal_ids.join('、') || '新方案'}\n\n变更说明：${p.change_summary ?? ''}\n\n${p.text}`;
 }
 
 export function rankedFinal(result, proposals) {

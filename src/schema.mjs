@@ -29,7 +29,7 @@ export function canonicalContributionType(value) {
   if (types.includes(key)) return key;
   return typeSynonyms[key] ?? typeSynonyms[key.replace(/-/g, '_')] ?? value;
 }
-const proposal = obj({ title: str, text: str, parent_proposal_ids: arr(str), change_summary: str, point_refs: arr(obj({ point_id: str, revision: { type: 'integer' } })) });
+const proposal = obj({ title: str, mechanisms: arr(str), text: str, parent_proposal_ids: arr(str), change_summary: str, point_refs: arr(obj({ point_id: str, revision: { type: 'integer' } })) });
 const legacyFinal = obj({ text: str, adopted_points: arr(obj({ point_id: str, revision: { type: 'integer' }, usage: str })) });
 export const schemas = {
   creative: obj({ reasoning: str, contributions: arr(obj({ text: str, type: { type: 'string', enum: types }, failure_condition: str })), proposals: arr(proposal) }),
@@ -93,9 +93,19 @@ export function alignedPointRefs(proposals) {
   }
   return aligned;
 }
-export function validateProposal(proposal, board, available) {
+export function validateProposal(proposal, board, available, maxMechanisms = 3) {
   const title = proposal.title.trim();
   assert(title && proposal.text.trim(), '方案标题及完整正文不能为空');
+  
+  assert(Array.isArray(proposal.mechanisms), '方案必须包含 mechanisms 机制列表');
+  assert(proposal.mechanisms.length >= 1, '方案必须至少包含 1 个核心机制');
+  assert(proposal.mechanisms.length <= maxMechanisms, `方案包含机制数（${proposal.mechanisms.length}）超过当前上限（最多 ${maxMechanisms} 个机制组合）`);
+  for (const m of proposal.mechanisms) {
+    assert(typeof m === 'string' && m.trim().length > 0, '机制名称不能为空');
+    assert([...m.trim()].length <= 20, `机制名称【${m}】过长，最多20个字`);
+    assert(!/(?:[加与及、+&]|同时|并且)/.test(m), `机制名称【${m}】违规：机制名称必须是单一原子概念，严禁使用“与/加/及/并且/同时”等连词拼凑复合机制！`);
+  }
+
   // A parent id that was never available cannot be resolved, and round 6 inherits ids proposed in the
   // same round. Drop the unresolvable reference and keep the proposal: the body is the deliverable, and
   // the dropped ids are recorded on the raw response so the lineage loss stays visible.
@@ -109,7 +119,7 @@ export function validateProposal(proposal, board, available) {
   assert(parents.length === 0 || (proposal.change_summary ?? '').trim(), '修订或派生方案必须说明相对来源方案的实质变化');
   assert([...title].length <= 32, '方案标题最多32个字');
   assert(!/[（(][A-Za-z][^）)]*[）)]/.test(title), '方案标题不要添加英文副标题');
-  assert([...proposal.text].length <= 3200, '单个方案正文最多3200字');
+  assert([...proposal.text].length <= 1500, '单个方案正文最多1500字');
   assert(!/[【](?:方案目标|完整机制|组件配合|必要条件|取舍与失效条件|验证办法)[】]/.test(proposal.text), '方案正文不要使用公文模板标题');
   assert(new Set(parents).size === parents.length, '父方案引用重复');
   // Duplicate detection must compare normalized ids, or "P002" and "#P002" read as two distinct points.
@@ -121,19 +131,22 @@ export function validateProposal(proposal, board, available) {
     if (result.aligned) ref.__alignedFrom = before;
   }
 }
-export function validateCreative(data, board, available, requireProposal = false) {
+export function validateCreative(data, board, available, requireProposal = false, maxMechanisms = 3) {
   validateSchema(data, schemas.creative);
   assert(data.contributions.length > 0 || data.proposals.length > 0, '至少贡献观点或完整方案');
   assert(!requireProposal || data.proposals.length > 0, '单轮实验至少需要一个完整方案');
   for (const c of data.contributions) {
     assert(c.text.trim().length > 0, '观点文本不能为空');
+    if (c.type === 'mechanism') {
+      assert(!/(?:第一[步阶段]|第二[步阶段]|1\.|2\.|首先.*然后)/.test(c.text), `机制观点【${c.text.slice(0, 20)}...】违规：原子机制只能包含一条核心计算规则，严禁划分多步骤、多阶段流水线！`);
+    }
   }
-  for (const p of data.proposals) validateProposal(p, board, available);
+  for (const p of data.proposals) validateProposal(p, board, available, maxMechanisms);
 }
-export function validateMemo(data, board, available) {
+export function validateMemo(data, board, available, maxMechanisms = 3) {
   validateSchema(data, schemas.decision);
   assert(data.proposals.length > 0, '第六轮至少需要一个完整候选方案');
-  for (const p of data.proposals) validateProposal(p, board, available);
+  for (const p of data.proposals) validateProposal(p, board, available, maxMechanisms);
 }
 export function validateRanking(data, proposals) {
   validateSchema(data, schemas.chair);

@@ -16,6 +16,7 @@ function completeProposal(c) {
   const parent = pool.length ? pool[index % pool.length] : null;
   return {
     title: '短循环验证方案 ' + (index + 1),
+    mechanisms: ['短循环验证', '有限资源决策'],
     text: ideas[index].join(' ') + '\n\n例如，先给予有限资源和两种各有代价的行动，公开本轮后果，再让参与者根据结果调整下一轮选择。\n\n主要风险是参与者看不懂选择与后果的联系。先做一个可撤销的小规模试验；如果连续两次都看不到策略变化，就停止增加内容并修改反馈。\n\n*固定模拟方案，不是对当前输入问题的真实回答。*',
     parent_proposal_ids: parent ? [parent.proposal_id] : [],
     change_summary: parent ? '保留完整机制并补全本轮验证条件。' : '提出包含资源、行动、反馈及验证办法的完整机制。',
