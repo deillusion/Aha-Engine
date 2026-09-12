@@ -81,17 +81,41 @@ export async function createApp({ dataDir = path.join(root, 'data/runs'), mockDe
         }
       }
       if (route === '/api/models/test' && req.method === 'POST') {
-        const { modelId, apiKey } = await body(req);
-        let liveConfig;
-        try { liveConfig = await loadConfig(root, 'live', { allowKeyless: true }); } catch (e) { return json(400, { error: e.message }); }
-        const model = liveConfig.models.find(m => m.id === modelId);
-        if (!model) return json(404, { error: `未找到模型配置: ${modelId}` });
-        const testModel = structuredClone(model);
-        if (typeof apiKey === 'string' && apiKey.trim() && !apiKey.includes('•••')) {
-          testModel.apiKey = apiKey.trim();
+        const payload = await body(req);
+        let testModel = null;
+        if (payload.modelConfig && typeof payload.modelConfig === 'object') {
+          testModel = structuredClone(payload.modelConfig);
+          if (typeof payload.apiKey === 'string' && payload.apiKey.trim() && !payload.apiKey.includes('•••')) {
+            testModel.apiKey = payload.apiKey.trim();
+          }
+        } else if (payload.modelId) {
+          let liveConfig;
+          try { liveConfig = await loadConfig(root, 'live', { allowKeyless: true }); } catch (e) { return json(400, { error: e.message }); }
+          const model = liveConfig.models.find(m => m.id === payload.modelId);
+          if (!model) return json(404, { error: `未找到模型配置: ${payload.modelId}` });
+          testModel = structuredClone(model);
+          if (typeof payload.apiKey === 'string' && payload.apiKey.trim() && !payload.apiKey.includes('•••')) {
+            testModel.apiKey = payload.apiKey.trim();
+          }
+        } else {
+          return json(400, { error: '缺少 modelId 或 modelConfig' });
         }
+
+        testModel.protocol = testModel.protocol || 'chat';
+        testModel.structuredOutput = testModel.structuredOutput || 'json_object';
+        testModel.tokenParameter = testModel.tokenParameter || 'max_tokens';
+        if (testModel.supportsTemperature === undefined) testModel.supportsTemperature = true;
+        if (testModel.supportsReasoning === undefined) testModel.supportsReasoning = true;
+        if (testModel.supportsSeed === undefined) testModel.supportsSeed = false;
+
         const key = getModelApiKey(testModel);
-        if (!key && testModel.apiKeyEnv !== null) {
+        let isLocal = false;
+        try {
+          const u = new URL(testModel.baseUrl);
+          isLocal = u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+        } catch {}
+
+        if (!key && testModel.apiKeyEnv !== null && !isLocal && !testModel.isKeyless) {
           return json(200, { ok: false, error: '未检测到 API Key，请先输入 Key 后测试' });
         }
         const start = Date.now();
@@ -105,6 +129,113 @@ export async function createApp({ dataDir = path.join(root, 'data/runs'), mockDe
           return json(200, { ok: true, latencyMs: Date.now() - start, model: testModel.model, response: result.text });
         } catch (err) {
           return json(200, { ok: false, latencyMs: Date.now() - start, model: testModel.model, error: err.message });
+        }
+      }
+      if (route === '/api/models/discover' && req.method === 'POST') {
+        const { baseUrl, apiKey, protocol, modelId } = await body(req);
+        if (!baseUrl || typeof baseUrl !== 'string') return json(400, { error: '请提供有效的 baseUrl' });
+        try {
+          const cleanUrl = baseUrl.trim().replace(/\/+$/, '');
+          let effectiveKey = (typeof apiKey === 'string' && apiKey.trim() && !apiKey.includes('•••') && apiKey !== '__EXISTING__')
+            ? apiKey.trim()
+            : null;
+
+          if (!effectiveKey && modelId) {
+            try {
+              const liveCfg = await loadConfig(root, 'live');
+              const exist = (liveCfg.models || []).find(m => m.id === modelId);
+              if (exist) effectiveKey = getModelApiKey(exist);
+            } catch {}
+          }
+
+          let isLocal = false;
+          try {
+            const u = new URL(baseUrl);
+            isLocal = u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '0.0.0.0' || u.hostname === '::1';
+          } catch {}
+
+          if (!isLocal && !effectiveKey) {
+            return json(200, {
+              ok: false,
+              needsKey: true,
+              error: '探测云端服务商模型必须提供 API Key 凭据。请在下方填入 API Key 后重试。'
+            });
+          }
+
+          if (protocol === 'gemini') {
+            const endpoint = `${cleanUrl}/models${effectiveKey ? `?key=${encodeURIComponent(effectiveKey)}` : ''}`;
+            const res = await fetch(endpoint, {
+              headers: effectiveKey ? { 'x-goog-api-key': effectiveKey } : {},
+              signal: AbortSignal.timeout(10000)
+            });
+            if (!res.ok) {
+              const text = await res.text();
+              if (res.status === 400 || res.status === 401 || res.status === 403) {
+                return json(200, { ok: false, isAuthError: true, error: `Gemini API Key 认证未通过 (HTTP ${res.status})，请核对 Key 是否正确` });
+              }
+              return json(200, { ok: false, error: `Gemini HTTP ${res.status}: ${text.slice(0, 300)}` });
+            }
+            const data = await res.json();
+            const models = (data.models || []).map(m => {
+              const name = m.name?.replace(/^models\//, '') || m.name;
+              return { id: name, name: m.displayName || name };
+            });
+            return json(200, { ok: true, models });
+          }
+
+          const headers = { 'Content-Type': 'application/json' };
+          if (effectiveKey) {
+            if (cleanUrl.includes('anthropic.com')) {
+              headers['x-api-key'] = effectiveKey;
+              headers['anthropic-version'] = '2023-06-01';
+            } else {
+              headers['Authorization'] = `Bearer ${effectiveKey}`;
+            }
+          }
+
+          let targetEndpoint = `${cleanUrl}/models`;
+          let res = await fetch(targetEndpoint, {
+            headers,
+            signal: AbortSignal.timeout(10000)
+          });
+          if (!res.ok && res.status === 404 && !cleanUrl.endsWith('/v1')) {
+            targetEndpoint = `${cleanUrl}/v1/models`;
+            res = await fetch(targetEndpoint, {
+              headers,
+              signal: AbortSignal.timeout(10000)
+            });
+          }
+          if (!res.ok) {
+            const text = await res.text();
+            if (res.status === 401 || res.status === 403) {
+              return json(200, {
+                ok: false,
+                isAuthError: true,
+                error: `API Key 认证未通过 (HTTP ${res.status})：密钥无效或无权访问模型列表，请核对下方 API Key`
+              });
+            }
+            if (res.status === 404) {
+              return json(200, {
+                ok: false,
+                isNotFound: true,
+                error: `该服务端点未开放 /models 模型探测接口 (HTTP 404)。请直接使用下方推荐选型或手动输入模型标识。`
+              });
+            }
+            return json(200, { ok: false, error: `HTTP ${res.status}: ${text.slice(0, 300)}` });
+          }
+          const data = await res.json();
+          const list = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
+          const models = list.map(m => ({
+            id: m.id || m.name,
+            name: m.name || m.id
+          })).filter(m => m.id);
+          return json(200, { ok: true, models });
+        } catch (err) {
+          const isTimeout = err.name === 'TimeoutError' || err.message?.includes('timeout');
+          return json(200, {
+            ok: false,
+            error: isTimeout ? '连接服务端点超时，请检查 Base URL 是否正确或网络是否畅通' : err.message
+          });
         }
       }
       if (route === '/api/runs' && req.method === 'GET') return json(200, { runs: await store.list(), activeId: active?.run.id ?? null });

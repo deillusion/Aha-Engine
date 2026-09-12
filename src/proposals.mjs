@@ -5,6 +5,8 @@ import { validateRanking } from './schema.mjs';
 export function materializeProposals(items, round, seatId, phase) {
   return items.map((p, index) => ({
     ...structuredClone(p),
+    // Normalize here, not at render time: an unset change_summary must never reach proposalText as "undefined".
+    change_summary: typeof p.change_summary === 'string' ? p.change_summary : '',
     proposal_id: `S-R${round}-${seatId}-${String(index + 1).padStart(2, '0')}`,
     round, seat_id: seatId, phase
   }));
@@ -18,7 +20,8 @@ export function proposalContext(proposals) {
 }
 
 export function proposalText(p) {
-  return `## ${p.title.replace(/[\r\n]+/g, ' ')}\n\n方案 ID：${p.proposal_id}\n\n来源方案：${p.parent_proposal_ids.join('、') || '新方案'}\n\n变更说明：${p.change_summary}\n\n${p.text}`;
+  const title = String(p.title ?? '').replace(/[\r\n]+/g, ' ');
+  return `## ${title}\n\n方案 ID：${p.proposal_id}\n\n来源方案：${p.parent_proposal_ids.join('、') || '新方案'}\n\n变更说明：${p.change_summary ?? ''}\n\n${p.text}`;
 }
 
 export function rankedFinal(result, proposals) {

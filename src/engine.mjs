@@ -1,16 +1,16 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { emptyBoard, applyPlan, validatePlan } from './board.mjs';
+import { emptyBoard, applyPlan, validatePlan, salvagePlan, fallbackAddAllPlan } from './board.mjs';
 import { operators, OPERATOR_VERSION, random, sampleOperators, sampleMixedOperators } from './operators.mjs';
-import { domainCatalog, domainOperatorsMap } from './domain_operators.mjs';
+import { DOMAIN_OPERATORS_VERSION, domainCatalog, domainOperatorsMap } from './domain_operators.mjs';
 import { eligibleDomainCatalog } from './domain_routing.mjs';
 import { messages, PROMPT_VERSION } from './prompts.mjs';
-import { validateCreative, validateRanking, validateDirect, validateMemo, validateDealer, typeLabels } from './schema.mjs';
+import { validateCreative, validateRanking, validateDirect, validateMemo, validateDealer, typeLabels, canonicalContributionType, alignedPointRefs } from './schema.mjs';
 import { materializeProposals, proposalText, rankedFinal } from './proposals.mjs';
 import { buildPayload, chatCompletion } from './provider.mjs';
 import { mockCompletion } from './mock.mjs';
 import { ModelGate } from './scheduler.mjs';
-import { resolveActiveConfig } from './config.mjs';
+import { resolveActiveConfig, validateConfig } from './config.mjs';
 export const EXPERIMENTS = {
   treatment: { name: '五轮协作', description: '5 轮共享观点与完整方案 → R6完善方案 → Chair仅排序' },
   independent: { name: '五轮独立采样', description: '创意席位读取空观点板与空方案池；R6读取全部成果；Chair仅排序' },
@@ -28,8 +28,18 @@ export function createRun(input, rawConfig) {
   if (!Number.isInteger(input.seed) || input.seed < 0 || input.seed > 2147483647) throw new Error('种子须为0–2147483647的整数');
   if (typeof input.use_operators !== 'boolean') throw new Error('use_operators 须为布尔值');
   const use_domain_operators = input.use_domain_operators === true;
-  const { config, routing } = resolveActiveConfig(rawConfig, input.mode);
-  return { workflow_version: 2, id: `run-${Date.now()}-${randomUUID().slice(0, 8)}`, problem: input.problem.trim(), constraints: input.constraints.filter(c => c.trim()), seed: input.seed, mode: input.mode, experiment: input.experiment, use_operators: input.use_operators, use_domain_operators, config: structuredClone(config), routing, prompt_version: PROMPT_VERSION, operator_version: OPERATOR_VERSION, operator_pool: structuredClone(operators), domain_operators: [], dealer_decision: null, status: 'running', phase: '准备', round: 0, started_at: new Date().toISOString(), completed_at: null, assignments: [], raw_responses: [], candidates: [], operations: [], snapshots: [emptyBoard()], proposals: [], proposal_snapshots: [{ version: 0, proposal_ids: [] }], memos: [], final: null, calls: [], events: [], round_metrics: [], metrics: { expected_calls: expectedCalls(input.experiment, config.seats.length, input.use_operators, use_domain_operators), attempted_calls: 0 } };
+
+  const effectiveConfig = structuredClone(rawConfig);
+  if (Array.isArray(input.seats) && input.seats.length > 0) {
+    effectiveConfig.seats = structuredClone(input.seats);
+  }
+  if (input.roles && typeof input.roles === 'object') {
+    effectiveConfig.roles = { ...effectiveConfig.roles, ...input.roles };
+  }
+  validateConfig(effectiveConfig, input.mode, { allowKeyless: true });
+
+  const { config, routing } = resolveActiveConfig(effectiveConfig, input.mode);
+  return { workflow_version: 2, id: `run-${Date.now()}-${randomUUID().slice(0, 8)}`, problem: input.problem.trim(), constraints: input.constraints.filter(c => c.trim()), seed: input.seed, mode: input.mode, experiment: input.experiment, use_operators: input.use_operators, use_domain_operators, config: structuredClone(config), routing, prompt_version: PROMPT_VERSION, operator_version: OPERATOR_VERSION, domain_operator_version: DOMAIN_OPERATORS_VERSION, operator_pool: structuredClone(operators), domain_operators: [], dealer_decision: null, status: 'running', phase: '准备', round: 0, started_at: new Date().toISOString(), completed_at: null, assignments: [], raw_responses: [], candidates: [], operations: [], snapshots: [emptyBoard()], proposals: [], proposal_snapshots: [{ version: 0, proposal_ids: [] }], memos: [], final: null, calls: [], events: [], round_metrics: [], metrics: { expected_calls: expectedCalls(input.experiment, config.seats.length, input.use_operators, use_domain_operators), attempted_calls: 0 } };
 }
 function ratio(a, b) { return b ? a / b : null; }
 export function calculateMetrics(run) {
@@ -50,6 +60,13 @@ export function calculateMetrics(run) {
   }
   return metrics;
 }
+// A rejected response is fed back verbatim as the failed assistant turn, followed by the concrete
+// validation error. Repetition alone is resampling: at temperature 1 it is a coin flip. Without the
+// exact error the model cannot know which field was wrong, and a formatting slip costs a whole cell.
+function retryFeedback(payload, error) {
+  payload.messages.push({ role: 'assistant', content: String(payload.messages.at(-1)?.content ?? '').slice(0, 4000) });
+  payload.messages.push({ role: 'user', content: `上一次回答未通过校验：${String(error?.message ?? error).slice(0, 500)}\n只修复该问题后重新返回完整 JSON。不要复述或回显 schema，不要输出多余字段。` });
+}
 export async function executeRun(run, { store, signal, provider, mockDelayMs = 180, retryDelayMs, onEvent } = {}) {
   const config = run.config;
   retryDelayMs ??= config.retryDelayMs ?? 500;
@@ -57,7 +74,7 @@ export async function executeRun(run, { store, signal, provider, mockDelayMs = 1
   const flush = async () => { run.metrics = calculateMetrics(run); if (store) await store.save(run); };
   const emit = async (phase, round, message) => { run.phase = phase; run.round = round; run.events.push({ time: new Date().toISOString(), phase, round, message }); await flush(); };
   function abortCheck() { signal?.throwIfAborted(); }
-  async function invoke(phase, modelId, context, validate, seatId = null, onStreamChunk = null) {
+  async function invoke(phase, modelId, context, validate, seatId = null, onStreamChunk = null, onFailure = null) {
     abortCheck();
     const model = config.models.find(m => m.id === modelId);
     const genKey = phase === 'direct' ? 'chair' : (config.generation[phase] ? phase : 'chair');
@@ -105,7 +122,29 @@ export async function executeRun(run, { store, signal, provider, mockDelayMs = 1
         call.status = signal?.aborted ? 'cancelled' : 'failed';
         // Do not log provider response bodies or arbitrary headers, which can echo credentials.
         call.error = error instanceof SyntaxError ? '模型未返回有效 JSON' : error.message;
-        if (signal?.aborted || attempt === config.retries) throw error;
+        // A salvage attempt is recorded only on calls that actually failed, and only if it validates.
+        if (onFailure && !signal?.aborted) {
+          try {
+            const salvaged = onFailure(error, call.response ?? null);
+            if (salvaged?.value !== undefined && salvaged.value !== null) {
+              if (validate) validate(salvaged.value);
+              call.salvage = salvaged.value;
+              call.salvaged = true;
+              call.salvage_repairs = salvaged.repairs ?? [];
+            }
+          } catch { /* Salvage is best-effort: the original failure always stands on its own. */ }
+        }
+        if (signal?.aborted || attempt === config.retries) {
+          // A validated salvage on the final attempt is better than any fallback: hand it to the caller.
+          if (call.salvage !== undefined) {
+            const final = new Error(call.error);
+            final.salvage = call.salvage;
+            throw final;
+          }
+          throw error;
+        }
+        // Retry with the concrete validation error appended; one bad field must not cost the whole cell.
+        retryFeedback(payload, error);
       } finally {
         call.completed_at = new Date().toISOString(); call.latency_ms = Date.parse(call.completed_at) - Date.parse(call.started_at);
         if (Number.isFinite(call.usage?.prompt_tokens) && Number.isFinite(call.usage?.completion_tokens) && model.inputPricePerMillion != null && model.outputPricePerMillion != null) call.estimated_cost = (call.usage.prompt_tokens * model.inputPricePerMillion + call.usage.completion_tokens * model.outputPricePerMillion) / 1e6;
@@ -131,7 +170,26 @@ export async function executeRun(run, { store, signal, provider, mockDelayMs = 1
         const onStreamChunk = chunk => {
           if (chunk.type === 'thinking') record.thinking = (record.thinking || '') + chunk.text;
         };
-        const val = await invoke('creative', seat.modelId, { board, proposals, round, operators: assignments[seatIndex].operators, seatIndex }, v => validateCreative(v, board, proposals, run.experiment === 'single'), seat.id, onStreamChunk);
+        // Operators are named in Chinese ("简化", "缺失环节"), so a model may reach for the matching
+        // English word instead of the enum member. Canonicalize before validating, and in place so the
+        // stored contributions carry the taxonomy member rather than the model's free spelling.
+        const validateAndCanonicalize = value => {
+          for (const item of (Array.isArray(value?.contributions) ? value.contributions : [])) {
+            if (item !== null && typeof item === 'object') item.type = canonicalContributionType(item.type);
+          }
+          validateCreative(value, board, proposals, run.experiment === 'single');
+        };
+        const val = await invoke('creative', seat.modelId, { board, proposals, round, operators: assignments[seatIndex].operators, seatIndex }, validateAndCanonicalize, seat.id, onStreamChunk);
+        // A stale revision is realigned to the board's current one during validation. Record it, then
+        // drop the internal marker so it never reaches the stored proposal or any later prompt.
+        const aligned = alignedPointRefs(val.proposals);
+        if (aligned.length) record.aligned_point_refs = aligned;
+        const droppedParents = val.proposals.flatMap(p => (p.dropped_parent_proposal_ids ?? []).map(id => ({ proposal_title: p.title, parent_proposal_id: id })));
+        if (droppedParents.length) record.dropped_parent_proposal_ids = droppedParents;
+        for (const proposal of val.proposals) {
+          delete proposal.dropped_parent_proposal_ids;
+          for (const ref of proposal.point_refs ?? []) delete ref.__alignedFrom;
+        }
         record.thinking = val.thinking || record.thinking || val.reasoning || '';
         record.reasoning = val.reasoning || record.thinking || '';
         record.contributions = val.contributions;
@@ -204,14 +262,38 @@ export async function executeRun(run, { store, signal, provider, mockDelayMs = 1
         );
         run.candidates.push(...candidates); await flush();
         await emit('去重合并', round, `R${round}：${candidates.length} 条候选与历史及同轮观点统一去重`);
-        const plan = await invoke('dedup', config.roles.dedup, { round, board: input, candidates }, p => validatePlan(p, candidates, input));
+        let plan, degraded = null;
+        try {
+          plan = await invoke('dedup', config.roles.dedup, { round, board: input, candidates }, p => validatePlan(p, candidates, input), null, null, (error, response) => {
+            // Formatting-only repair: strip undeclared keys and normalize a rendered "#P001" reference.
+            if (typeof response !== 'string') return null;
+            let parsed;
+            try { parsed = JSON.parse(response); } catch { return null; }
+            const { plan: salvaged, repairs } = salvagePlan(parsed);
+            return repairs.length ? { value: salvaged, repairs } : null;
+          });
+        } catch (error) {
+          abortCheck();
+          if (error.salvage !== undefined) {
+            // The answer was only mis-formatted. Keep the repaired plan and say so, without degrading.
+            plan = error.salvage;
+            const repairs = run.calls.at(-1)?.salvage_repairs ?? [];
+            await emit('去重修复', round, `R${round} 去重回答仅格式不合规，已修复后沿用${repairs.length ? `（${repairs.join('；')}）` : ''}：${error.message}`);
+          } else {
+            // Dedup runs once per round with no redundancy, so a single unrecoverable answer must not
+            // end the whole run. Degrade to keeping every candidate as a new point, and say so out loud.
+            degraded = error.message;
+            plan = fallbackAddAllPlan(candidates);
+            await emit('去重降级', round, `R${round} 去重校验失败，本轮候选全部保留为新观点（不合并、不丢弃）：${error.message}`);
+          }
+        }
         const update = applyPlan(input, plan, candidates, round);
         abortCheck(); board = update.board;
         run.operations.push(...update.operations); run.snapshots.push(structuredClone(board));
         const lengths = candidates.map(c => [...c.text].length).sort((a, b) => a - b);
         const count = action => update.operations.filter(o => o.action === action).length;
-        run.round_metrics.push({ round, successful_seats: raw.length, candidate_count: candidates.length, add: count('ADD'), merge: count('MERGE'), drop: count('DROP'), novelty_rate: ratio(count('ADD'), candidates.length), duplicate_rate: ratio(count('DROP'), candidates.length), board_size: board.points.length, board_growth: board.points.length - input.points.length, board_characters: board.rendered_text.length, extraction_yield: ratio(candidates.length, raw.length), compression_ratio_characters: ratio(candidates.reduce((n, c) => n + c.text.length, 0), raw.reduce((n, r) => n + r.text.length, 0)), candidate_length_p50: lengths.length ? lengths[Math.floor((lengths.length - 1) * .5)] : null, candidate_length_p95: lengths.length ? lengths[Math.ceil((lengths.length - 1) * .95)] : null, over_150: lengths.filter(n => n > 150).length });
-        await emit('观点板已更新', round, `R${round} 完成：新增 ${count('ADD')}，合并 ${count('MERGE')}，丢弃 ${count('DROP')}`);
+        run.round_metrics.push({ round, successful_seats: raw.length, candidate_count: candidates.length, add: count('ADD'), merge: count('MERGE'), drop: count('DROP'), degraded: degraded ?? null, novelty_rate: ratio(count('ADD'), candidates.length), duplicate_rate: ratio(count('DROP'), candidates.length), board_size: board.points.length, board_growth: board.points.length - input.points.length, board_characters: board.rendered_text.length, extraction_yield: ratio(candidates.length, raw.length), compression_ratio_characters: ratio(candidates.reduce((n, c) => n + c.text.length, 0), raw.reduce((n, r) => n + r.text.length, 0)), candidate_length_p50: lengths.length ? lengths[Math.floor((lengths.length - 1) * .5)] : null, candidate_length_p95: lengths.length ? lengths[Math.ceil((lengths.length - 1) * .95)] : null, over_150: lengths.filter(n => n > 150).length });
+        await emit('观点板已更新', round, `R${round} 完成：新增 ${count('ADD')}，合并 ${count('MERGE')}，丢弃 ${count('DROP')}${degraded ? '（降级模式）' : ''}`);
       }
       await emit('完善候选方案', 6, 'R6：所有席位读取完整方案池，补全机制并保留各自候选方案');
       const available = structuredClone(run.proposals);
@@ -222,6 +304,14 @@ export async function executeRun(run, { store, signal, provider, mockDelayMs = 1
             if (chunk.type === 'thinking') memo.thinking = (memo.thinking || '') + chunk.text;
           };
           const value = await invoke('decision', seat.modelId, { round: 6, board, proposals: available, seatIndex }, v => validateMemo(v, board, available), seat.id, onStreamChunk);
+          const aligned = alignedPointRefs(value.proposals);
+          if (aligned.length) memo.aligned_point_refs = aligned;
+          const droppedParents = value.proposals.flatMap(p => (p.dropped_parent_proposal_ids ?? []).map(id => ({ proposal_title: p.title, parent_proposal_id: id })));
+          if (droppedParents.length) memo.dropped_parent_proposal_ids = droppedParents;
+          for (const proposal of value.proposals) {
+            delete proposal.dropped_parent_proposal_ids;
+            for (const ref of proposal.point_refs ?? []) delete ref.__alignedFrom;
+          }
           memo.thinking = memo.thinking || '';
           const proposals = materializeProposals(value.proposals, 6, seat.id, 'decision');
           run.proposals.push(...proposals);
@@ -242,6 +332,7 @@ export async function executeRun(run, { store, signal, provider, mockDelayMs = 1
     const round = ['single', 'direct'].includes(run.experiment) ? 1 : 6;
     if (run.experiment === 'direct') {
       await emit('直接回答', round, '单模型直接回答，不调用 Chair 排序角色');
+      // The direct answer is the entire deliverable, so its one call stays terminal on failure.
       run.final = { kind: 'direct', ...await invoke('direct', config.roles.chair, { round }, validateDirect) };
     } else {
       const proposals = structuredClone(run.proposals);
@@ -249,12 +340,30 @@ export async function executeRun(run, { store, signal, provider, mockDelayMs = 1
       const onStreamChunk = chunk => {
         if (chunk.type === 'thinking') run.chair_thinking = (run.chair_thinking || '') + chunk.text;
       };
-      const ranking = await invoke('chair', config.roles.chair, { round, proposals }, v => validateRanking(v, proposals), 'chair', onStreamChunk);
-      run.final = rankedFinal(ranking, proposals);
+      try {
+        const ranking = await invoke('chair', config.roles.chair, { round, proposals }, v => validateRanking(v, proposals), 'chair', onStreamChunk);
+        run.final = rankedFinal(ranking, proposals);
+      } catch (error) {
+        abortCheck();
+        // Every proposal was already produced and paid for. Losing the run at the last call would throw
+        // all of it away, so fall back to a declared neutral order instead of a ranked one.
+        run.chair_degraded = error.message;
+        await emit('排序降级', round, `Chair 排序校验失败，跳过模型排序并保留全部 ${proposals.length} 个方案：${error.message}`);
+        run.final = rankedFinal({ rankings: proposals.map(p => ({ proposal_id: p.proposal_id, reason: 'Chair 排序未通过校验，此处为保序占位，不代表模型名次。' })) }, proposals);
+        run.final.degraded = true;      }
     }
     abortCheck(); run.status = 'completed'; run.phase = '已完成';
   } catch (error) {
     run.status = signal?.aborted ? 'cancelled' : 'failed'; run.error = signal?.aborted ? '用户已停止运行' : error.message; run.phase = run.status === 'cancelled' ? '已停止' : '运行失败';
-  } finally { run.completed_at = new Date().toISOString(); await flush(); }
+  } finally {
+    run.completed_at = new Date().toISOString();
+    // A completed run may still have degraded somewhere. Summarize it so a degraded result can never
+    // be mistaken for a fully validated one when the run is read back later.
+    const degraded_dedup_rounds = run.round_metrics.filter(m => m.degraded).map(m => m.round);
+    run.degraded = run.chair_degraded || degraded_dedup_rounds.length
+      ? { dedup_rounds: degraded_dedup_rounds, chair: run.chair_degraded ?? null }
+      : null;
+    await flush();
+  }
   return run;
 }

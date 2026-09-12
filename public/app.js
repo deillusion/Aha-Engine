@@ -29,12 +29,35 @@ function history() {
   $('#history').innerHTML = state.runs.length ? state.runs.slice(0, 40).map(r => `<button class="history-item ${state.run?.id === r.id ? 'selected' : ''}" data-run="${escape(r.id)}"><div class="history-title">${escape(r.problem)}</div><div class="history-meta"><span class="status-${r.status}">● ${statusNames[r.status] || r.status}</span><span>${r.mode === 'mock' ? '模拟' : '真实'} · ${new Date(r.started_at).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })}</span></div></button>`).join('') : '<div class="small-note" style="padding:10px 12px">会议记录会保存在这里</div>';
 }
 function heading(eyebrow, title, subtitle, right = '') { return `<div class="heading-row"><div><span class="eyebrow">${eyebrow}</span><h1>${title}</h1><p>${subtitle}</p></div>${right}</div>`; }
+function getNextSeatId(existingSeats) {
+  let num = existingSeats.length + 1;
+  const ids = new Set(existingSeats.map(s => s.id));
+  while (ids.has(`S${num}`)) {
+    num++;
+  }
+  return `S${num}`;
+}
+function getSessionSeatsAndRoles() {
+  const baseCfg = activeConfig() ?? state.config?.mockConfig ?? { seats: [], models: [], roles: {} };
+  const hasCustomSeats = Array.isArray(state.draft.customSeats);
+  const hasCustomRoles = state.draft.customRoles && typeof state.draft.customRoles === 'object';
+  const seats = hasCustomSeats ? structuredClone(state.draft.customSeats) : structuredClone(baseCfg.seats || []);
+  const roles = hasCustomRoles ? { ...(baseCfg.roles || {}), ...state.draft.customRoles } : structuredClone(baseCfg.roles || {});
+  return {
+    seats,
+    roles,
+    isCustomized: hasCustomSeats || hasCustomRoles,
+    models: baseCfg.models || []
+  };
+}
 function seats(config) {
   return `<div class="seat-grid">${(config.seats || []).map(s => `<div class="seat" data-model="${escape(s.modelId)}"><strong>${escape(s.id)}</strong><small>${escape(s.modelId)}</small></div>`).join('')}</div>`;
 }
 function renderNew() {
-  const d = state.draft, config = activeConfig() ?? state.config?.mockConfig ?? { seats: [], models: [] };
-  const calls = d.experiment === 'direct' ? 1 : d.experiment === 'single' ? (config.seats?.length ?? 0) + 1 : (config.seats?.length ?? 0) * 6 + 6;
+  const d = state.draft;
+  const { seats: effectiveSeats, roles: effectiveRoles, isCustomized, models } = getSessionSeatsAndRoles();
+  const dealerCall = d.use_operators && d.use_domain_operators && ['treatment', 'independent', 'single'].includes(d.experiment) ? 1 : 0;
+  const calls = d.experiment === 'direct' ? 1 : d.experiment === 'single' ? effectiveSeats.length + 1 + dealerCall : effectiveSeats.length * 6 + 6 + dealerCall;
   $('#main').innerHTML = `${heading('A LITTLE DIFFERENCE. A BETTER IDEA.', '给好想法，多一点碰撞。', '把一个开放式问题，交给不同视角共同思考。', '<span class="badge"><span class="online-dot"></span> 工作台已就绪</span>')}
     <div class="workspace-grid"><div><form id="run-form" class="card"><div class="card-head"><h2><span class="step">01</span> 定义这次讨论</h2><small>从一个值得探索的问题开始</small></div>
     <div class="form-body"><div class="field"><label class="field-label" for="problem">你想解决什么问题？<button type="button" class="example-button" id="load-example">试试一个玩法设计问题 ↗</button></label><textarea id="problem" name="problem" required maxlength="20000" placeholder="例如：设计一个轻量的合作玩法，让玩家在每一局中都能做出有意义的选择……">${escape(d.problem)}</textarea></div>
@@ -48,14 +71,196 @@ function renderNew() {
       <div class="info-box stack-gap" style="background:#fff8e6;border:1px solid #f2da99;color:#7a5a15;display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-radius:8px">
         <div>
           <b style="display:block;margin-bottom:2px">⚠️ 尚未配置任何模型 API Key</b>
-          <span style="font-size:11.5px">只需配置其中任意 1 个模型，系统即可自动自适应调度 8 席开始会议。</span>
+          <span style="font-size:11.5px">只需配置其中任意 1 个模型，系统即可自适应调度 ${effectiveSeats.length} 席开始会议。</span>
         </div>
         <button type="button" class="button secondary" id="jump-to-config-btn" style="padding:5px 12px;font-size:11.5px;white-space:nowrap">👉 前往配置 (只需填1个)</button>
       </div>` : ''}</div>
     <div class="form-bottom"><p>将问题发送至已配置的模型服务，按服务商计费。<br>本次 ${calls} 次模型调用起 · ${escape(state.config.experiments[d.experiment].description)}</p><button type="submit" class="primary" ${state.activeId || !state.config.liveConfig ? 'disabled' : ''}>${state.activeId ? '已有会议运行中' : '开始会议'} <span>→</span></button></div></form>
     <div class="lower-note"><span>每轮独立发言</span><span>完整过程可追溯</span><span>会议记录保存在本地</span></div></div>
-    <aside class="right-rail"><section class="card rail-card"><span class="eyebrow">THE TABLE</span><h3 style="margin-top:12px">${config.seats?.length ?? 0} 个席位，多种思考路径</h3><p>同一问题，独立思考；有价值的贡献<br>汇入下一轮公共观点板。</p>${seats(config)}<div class="legend-row"><span>${config.models?.length ?? 0} 个模型</span><span>每席 3 个思维刺激</span></div></section>
-    <section class="card rail-card"><span class="eyebrow">HOW IT WORKS</span><div class="timeline"><div class="timeline-item"><span class="timeline-number">1</span><div><h4>独立思考 · 5 轮</h4><p>原子观点去重，完整方案独立保存并持续修订。</p></div></div><div class="timeline-item"><span class="timeline-number">2</span><div><h4>完善方案 · 第 6 轮</h4><p>各席位读取完整方案，补全机制与验证办法。</p></div></div><div class="timeline-item"><span class="timeline-number">3</span><div><h4>所有方案交给你选择</h4><p>Chair 只做排序，方案正文原样保留。</p></div></div></div></section><div class="principle"><strong>保留分歧，也保留可能性。</strong>不同结论可以同时存在。让因果、约束与可执行性决定最终选择。</div></aside></div>`;
+    <aside class="right-rail">
+      <section class="card rail-card">
+        <div class="rail-card-head">
+          <div>
+            <span class="eyebrow">THE TABLE · 本次会话席位</span>
+            <h3 style="margin-top:4px">${effectiveSeats.length} 个席位 · 多维协同</h3>
+          </div>
+          ${isCustomized ? `<span class="badge custom-badge" title="当前为本次会话专属配置，下次新建会议将自动恢复默认">本次自定义</span>` : `<span class="badge default-badge" title="当前遵循「模型与规则」全局默认配置">默认配置</span>`}
+        </div>
+        <p style="margin:6px 0 10px;font-size:10.5px;color:#7c8c76">同一问题独立思考；可为本次会议增删席位或调整裁决角色。</p>
+        
+        <div class="home-seats-list" id="home-seats-list">
+          ${effectiveSeats.map((s, idx) => `
+            <div class="home-seat-row">
+              <input type="text" class="home-seat-id-input" data-idx="${idx}" value="${escape(s.id)}" maxlength="12" title="席位标识">
+              <select class="home-seat-model-select" data-idx="${idx}">
+                ${models.map(m => `<option value="${escape(m.id)}" ${s.modelId === m.id ? 'selected' : ''}>${escape(m.id)} ${m.hasKey ? '🟢' : '⚪'}</option>`).join('')}
+              </select>
+              <button type="button" class="home-seat-del-btn" data-idx="${idx}" title="删除该席位" ${effectiveSeats.length <= 1 ? 'disabled style="visibility:hidden"' : ''}>×</button>
+            </div>
+          `).join('')}
+        </div>
+
+        <div class="home-seats-actions">
+          <button type="button" class="button secondary mini-btn" id="home-add-seat-btn">➕ 添加席位</button>
+          <button type="button" class="button secondary mini-btn" id="home-balance-seats-btn">⚡ 均匀排席</button>
+          ${isCustomized ? `<button type="button" class="home-reset-link" id="home-reset-seats-btn" title="放弃本次自定义，恢复为默认配置">↺ 恢复默认</button>` : ''}
+        </div>
+
+        <details class="home-roles-details" ${isCustomized && state.draft.customRoles ? 'open' : ''}>
+          <summary>
+            <span>⚖️ 裁决角色设置</span>
+            <span style="font-size:9.5px;color:#7f917a">${escape(effectiveRoles.chair || '')} / ${escape(effectiveRoles.dedup || '')}</span>
+          </summary>
+          <div class="home-roles-body">
+            <div class="home-role-field">
+              <label>Chair 排序裁决模型</label>
+              <select id="home-role-chair">
+                ${models.map(m => `<option value="${escape(m.id)}" ${effectiveRoles.chair === m.id ? 'selected' : ''}>${escape(m.id)} (${escape(m.model)}) ${m.hasKey ? '🟢' : '⚪'}</option>`).join('')}
+              </select>
+            </div>
+            <div class="home-role-field">
+              <label>Dedup 观点去重模型</label>
+              <select id="home-role-dedup">
+                ${models.map(m => `<option value="${escape(m.id)}" ${effectiveRoles.dedup === m.id ? 'selected' : ''}>${escape(m.id)} (${escape(m.model)}) ${m.hasKey ? '🟢' : '⚪'}</option>`).join('')}
+              </select>
+            </div>
+            <div class="home-role-field">
+              <label>Dealer 算子发卡模型</label>
+              <select id="home-role-dealer">
+                ${models.map(m => `<option value="${escape(m.id)}" ${(effectiveRoles.dealer || effectiveRoles.chair) === m.id ? 'selected' : ''}>${escape(m.id)} (${escape(m.model)}) ${m.hasKey ? '🟢' : '⚪'}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+        </details>
+
+        <div class="home-seats-note">
+          💡 <b>会话独有生效</b>：此处增删改席位与角色仅对本次会议生效；下次新建会议自动恢复默认配置。
+        </div>
+      </section>
+      <section class="card rail-card">
+        <span class="eyebrow">HOW IT WORKS</span>
+        <div class="timeline">
+          <div class="timeline-item"><span class="timeline-number">1</span><div><h4>独立思考 · 5 轮</h4><p>原子观点去重，完整方案独立保存并持续修订。</p></div></div>
+          <div class="timeline-item"><span class="timeline-number">2</span><div><h4>完善方案 · 第 6 轮</h4><p>各席位读取完整方案，补全机制与验证办法。</p></div></div>
+          <div class="timeline-item"><span class="timeline-number">3</span><div><h4>所有方案交给你选择</h4><p>Chair 只做排序，方案正文原样保留。</p></div></div>
+        </div>
+      </section>
+      <div class="principle"><strong>保留分歧，也保留可能性。</strong>不同结论可以同时存在。让因果、约束与可执行性决定最终选择。</div>
+    </aside></div>`;
+
+  // Bind Home seat & role interactive events
+  document.querySelectorAll('.home-seat-model-select').forEach(sel => {
+    sel.addEventListener('change', () => {
+      saveDraft();
+      const current = getSessionSeatsAndRoles();
+      const idx = Number(sel.dataset.idx);
+      if (current.seats[idx]) {
+        current.seats[idx].modelId = sel.value;
+        state.draft.customSeats = current.seats;
+        renderNew();
+      }
+    });
+  });
+
+  document.querySelectorAll('.home-seat-id-input').forEach(inp => {
+    inp.addEventListener('change', () => {
+      saveDraft();
+      const current = getSessionSeatsAndRoles();
+      const idx = Number(inp.dataset.idx);
+      const val = inp.value.trim();
+      if (val && /^[A-Za-z0-9_-]+$/.test(val) && current.seats[idx]) {
+        const otherExists = current.seats.some((s, i) => i !== idx && s.id === val);
+        if (otherExists) {
+          toast(`⚠️ 席位标识 "${val}" 已存在，请使用唯一标识`);
+          inp.value = current.seats[idx].id;
+          return;
+        }
+        current.seats[idx].id = val;
+        state.draft.customSeats = current.seats;
+      } else if (val) {
+        toast('⚠️ 席位标识仅支持英文字母、数字、下划线和短横线');
+        inp.value = current.seats[idx]?.id || `S${idx + 1}`;
+        return;
+      }
+      renderNew();
+    });
+  });
+
+  document.querySelectorAll('.home-seat-del-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      saveDraft();
+      const current = getSessionSeatsAndRoles();
+      if (current.seats.length <= 1) {
+        toast('⚠️ 至少保留 1 个席位');
+        return;
+      }
+      const idx = Number(btn.dataset.idx);
+      const delId = current.seats[idx]?.id;
+      current.seats.splice(idx, 1);
+      state.draft.customSeats = current.seats;
+      renderNew();
+      toast(`已移除席位 ${delId}（本次会话生效）`);
+    });
+  });
+
+  $('#home-add-seat-btn')?.addEventListener('click', () => {
+    saveDraft();
+    const current = getSessionSeatsAndRoles();
+    if (current.seats.length >= 32) {
+      toast('⚠️ 最多支持 32 个席位');
+      return;
+    }
+    const nextId = getNextSeatId(current.seats);
+    const activeM = current.models.find(m => m.hasKey) || current.models[0];
+    current.seats.push({ id: nextId, modelId: activeM ? activeM.id : 'GLM' });
+    state.draft.customSeats = current.seats;
+    renderNew();
+    toast(`➕ 已添加席位 ${nextId}（本次会话生效）`);
+  });
+
+  $('#home-balance-seats-btn')?.addEventListener('click', () => {
+    saveDraft();
+    const current = getSessionSeatsAndRoles();
+    const active = current.models.filter(m => m.hasKey);
+    const pool = active.length > 0 ? active : current.models;
+    if (pool.length === 0) return;
+    const counts = new Map(pool.map(m => [m.id, 0]));
+    current.seats.forEach(s => {
+      let minCount = Infinity;
+      let targetId = pool[0].id;
+      for (const m of pool) {
+        const c = counts.get(m.id) || 0;
+        if (c < minCount) {
+          minCount = c;
+          targetId = m.id;
+        }
+      }
+      s.modelId = targetId;
+      counts.set(targetId, minCount + 1);
+    });
+    state.draft.customSeats = current.seats;
+    renderNew();
+    toast(`✅ 已按 ${pool.length} 个模型完成 ${current.seats.length} 席均匀排席（本次会话生效）`);
+  });
+
+  $('#home-reset-seats-btn')?.addEventListener('click', () => {
+    saveDraft();
+    state.draft.customSeats = null;
+    state.draft.customRoles = null;
+    renderNew();
+    toast('↺ 已恢复全局默认席位与裁决角色配置');
+  });
+
+  ['chair', 'dedup', 'dealer'].forEach(role => {
+    $(`#home-role-${role}`)?.addEventListener('change', e => {
+      saveDraft();
+      const current = getSessionSeatsAndRoles();
+      current.roles[role] = e.target.value;
+      state.draft.customRoles = current.roles;
+      renderNew();
+      toast(`已更新 ${role} 裁决模型为 ${e.target.value}（本次会话生效）`);
+    });
+  });
 }
 const typeLabels = { proposal: '方案', mechanism: '机制', argument: '论据', counterexample: '反例', modification: '改造', connection: '新联系', assumption: '隐藏假设', reframing: '问题重构', other: '其他' };
 function metric(label, value, note) { return `<div class="card metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div><div class="metric-note">${note}</div></div>`; }
@@ -453,6 +658,601 @@ function renderCompare() {
   <div class="info-box">调用次数相同不代表 token 或费用相同。请比较同一问题、相同模型配置和多个种子的真实运行；模拟数据不能用于质量结论。导出答案后可隐藏实验名称交给独立评审。</div>
   <section class="card table-wrap"><table><thead><tr><th>问题 / 运行</th><th>实验</th><th>模式 / 状态</th><th>调用</th><th>Tokens</th><th>耗时</th><th>排序覆盖 / 旧版采用</th></tr></thead><tbody>${state.runs.map(r => `<tr><td><button class="example-button compare-problem" data-run="${r.id}" title="${escape(r.problem)}">${escape(r.problem)}</button><div class="small-note">Seed ${r.seed}</div></td><td>${escape(state.config.experiments[r.experiment]?.name)}${!r.use_operators ? '<br><span class="small-note">无思维刺激</span>' : ''}</td><td>${r.mode === 'mock' ? '模拟' : '真实'} · ${statusNames[r.status]}</td><td>${r.metrics.attempted_calls}</td><td>${r.metrics.input_tokens == null ? '—' : number(r.metrics.input_tokens + r.metrics.output_tokens)}</td><td>${Math.round((r.metrics.duration_ms ?? 0) / 1000)}s</td><td>${r.workflow_version === 2 ? (r.experiment === 'direct' ? '不适用' : `${r.metrics.ranked_proposals} / ${r.metrics.proposal_count}`) : percent(r.metrics.late_round_value)}</td></tr>`).join('') || '<tr><td colspan="7">还没有会议记录。先新建一次会议。</td></tr>'}</tbody></table></section>`;
 }
+const MODEL_PRESETS = [
+  {
+    label: 'DeepSeek 官方',
+    icon: '🐳',
+    id: 'DEEPSEEK',
+    model: 'deepseek-flash',
+    baseUrl: 'https://api.deepseek.com',
+    protocol: 'chat',
+    structuredOutput: 'json_object',
+    tokenParameter: 'max_tokens',
+    supportsTemperature: true,
+    supportsReasoning: true,
+    supportsSeed: false,
+    modelsList: ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4.1-flash']
+  },
+  {
+    label: '智谱清言 GLM',
+    icon: '🔮',
+    id: 'GLM',
+    model: 'GLM-5.3-Flash',
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    protocol: 'chat',
+    structuredOutput: 'json_object',
+    tokenParameter: 'max_tokens',
+    supportsTemperature: true,
+    supportsReasoning: true,
+    supportsSeed: false,
+    reasoningEffortMap: { medium: 'high' },
+    modelsList: ['GLM-5.3-Flash', 'glm-5-plus', 'glm-5-turbo']
+  },
+  {
+    label: 'Google Gemini',
+    icon: '✨',
+    id: 'GEMINI',
+    model: 'gemini-3.7-flash',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    protocol: 'chat',
+    structuredOutput: 'json_schema',
+    tokenParameter: 'max_tokens',
+    supportsTemperature: true,
+    supportsReasoning: true,
+    supportsSeed: false,
+    maxOutputTokens: 65536,
+    maxConcurrent: 1,
+    requestIntervalMs: 2500,
+    modelsList: ['gemini-3.7-flash', 'gemini-3.0-pro', 'gemini-2.5-flash']
+  },
+  {
+    label: 'Anthropic Claude',
+    icon: '🧠',
+    id: 'CLAUDE',
+    model: 'claude-sonnet-4-5',
+    baseUrl: 'https://api.anthropic.com/v1',
+    protocol: 'chat',
+    structuredOutput: 'json_object',
+    tokenParameter: 'max_tokens',
+    supportsTemperature: true,
+    supportsReasoning: true,
+    supportsSeed: false,
+    modelsList: ['claude-sonnet-4-5', 'claude-3-7-sonnet', 'claude-4-opus']
+  },
+  {
+    label: 'OpenAI 官方',
+    icon: '🟢',
+    id: 'OPENAI',
+    model: 'gpt-5',
+    baseUrl: 'https://api.openai.com/v1',
+    protocol: 'chat',
+    structuredOutput: 'json_object',
+    tokenParameter: 'max_completion_tokens',
+    supportsTemperature: true,
+    supportsReasoning: true,
+    supportsSeed: true,
+    modelsList: ['gpt-5', 'gpt-5-mini', 'o3', 'o3-mini', 'o4-mini']
+  },
+  {
+    label: '硅基流动 SiliconFlow',
+    icon: '⚡',
+    id: 'SILICONFLOW',
+    model: 'deepseek-ai/DeepSeek-V4',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    protocol: 'chat',
+    structuredOutput: 'json_object',
+    tokenParameter: 'max_tokens',
+    supportsTemperature: true,
+    supportsReasoning: true,
+    supportsSeed: false,
+    modelsList: ['deepseek-ai/DeepSeek-V4', 'Qwen/Qwen3-72B', 'deepseek-ai/DeepSeek-V4-Flash']
+  },
+  {
+    label: '通义千问 DashScope',
+    icon: '☁️',
+    id: 'QWEN',
+    model: 'qwen-3-max',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    protocol: 'chat',
+    structuredOutput: 'json_object',
+    tokenParameter: 'max_tokens',
+    supportsTemperature: true,
+    supportsReasoning: true,
+    supportsSeed: false,
+    modelsList: ['qwen-3-max', 'qwen-3-72b', 'qwen-3-plus']
+  },
+  {
+    label: '月之暗面 Kimi',
+    icon: '🌙',
+    id: 'MOONSHOT',
+    model: 'kimi-k2',
+    baseUrl: 'https://api.moonshot.cn/v1',
+    protocol: 'chat',
+    structuredOutput: 'json_object',
+    tokenParameter: 'max_tokens',
+    supportsTemperature: true,
+    supportsReasoning: true,
+    supportsSeed: false,
+    modelsList: ['kimi-k2', 'moonshot-v1-32k', 'moonshot-v1-128k']
+  },
+  {
+    label: '本地 Ollama / vLLM',
+    icon: '🦙',
+    id: 'OLLAMA',
+    model: 'qwen3:72b',
+    baseUrl: 'http://localhost:11434/v1',
+    protocol: 'chat',
+    structuredOutput: 'json_object',
+    tokenParameter: 'max_tokens',
+    supportsTemperature: true,
+    supportsReasoning: false,
+    supportsSeed: false,
+    isKeyless: true,
+    modelsList: ['deepseek-v4', 'qwen3:72b', 'llama4:70b']
+  },
+  {
+    label: '自定义端点',
+    icon: '🛠️',
+    id: 'CUSTOM',
+    model: '',
+    baseUrl: 'https://',
+    protocol: 'chat',
+    structuredOutput: 'json_object',
+    tokenParameter: 'max_tokens',
+    supportsTemperature: true,
+    supportsReasoning: true,
+    supportsSeed: false
+  }
+];
+
+function openModelModal(modelData = {}, isEdit = false) {
+  const dialog = $('#model-dialog');
+  if (!dialog) return;
+
+  const m = structuredClone(modelData);
+  let targetId = m.id || '';
+  const c = state.config.liveConfig ?? state.config.mockConfig;
+  if (!isEdit) {
+    const existingIds = new Set((c.models || []).map(x => x.id));
+    if (existingIds.has(targetId) || !targetId) {
+      let candidate = targetId || 'NEW_MODEL';
+      let count = 2;
+      while (existingIds.has(candidate)) {
+        candidate = `${targetId || 'NEW_MODEL'}_${count++}`;
+      }
+      targetId = candidate;
+    }
+  }
+
+  const defaultModelsList = m.modelsList || [];
+
+  dialog.innerHTML = `
+    <div class="modal-header">
+      <h3>${isEdit ? `✏️ 编辑模型 · ${escape(targetId)}` : '➕ 添加大模型配置'}</h3>
+      <button type="button" class="dialog-close" id="modal-close-x">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-field">
+        <label>模型唯一 ID <span class="field-hint">仅限字母、数字、下划线和短横线</span></label>
+        <input type="text" id="modal-field-id" value="${escape(targetId)}" ${isEdit ? 'readonly style="background:#f0f4ee;color:#576b54"' : ''} placeholder="如 SILICONFLOW, QWEN_PLUS">
+      </div>
+
+      <div class="form-field">
+        <label>API 协议与服务商格式</label>
+        <select id="modal-field-protocol">
+          <option value="chat" ${m.protocol !== 'gemini' ? 'selected' : ''}>chat (OpenAI 兼容 /v1/chat/completions)</option>
+          <option value="gemini" ${m.protocol === 'gemini' ? 'selected' : ''}>gemini (Google Gemini 原生 generateContent)</option>
+        </select>
+      </div>
+
+      <div class="form-field">
+        <label>服务端点 Base URL</label>
+        <input type="text" id="modal-field-baseUrl" value="${escape(m.baseUrl || 'https://')}" placeholder="https://api.example.com/v1">
+      </div>
+
+      <div class="form-field" id="modal-field-group-key">
+        <label>API Key 密钥凭据 ${m.isKeyless || (m.baseUrl && (m.baseUrl.includes('localhost') || m.baseUrl.includes('127.0.0.1'))) ? '<span class="field-hint">(本地服务免 Key)</span>' : '<span class="field-hint key-required-hint">(* 探测模型与调用必需)</span>'}</label>
+        <div class="input-with-action">
+          <input type="password" id="modal-field-apiKey" value="${m.apiKey && !m.apiKey.includes('•••') ? escape(m.apiKey) : ''}" placeholder="${m.hasKey ? (m.maskedKey || '已配置密钥 (留空保持不变)') : '输入 API Key (如 sk-...)'}">
+          <button type="button" class="config-icon-btn" id="modal-toggle-key-btn" title="显示/隐藏明文">👁️</button>
+        </div>
+      </div>
+
+      <div class="form-field">
+        <label>模型名称 (Model Identifier)</label>
+        <div class="input-with-action">
+          <input type="text" id="modal-field-model" value="${escape(m.model || '')}" placeholder="如 deepseek-flash, gpt-5, claude-sonnet-4-5">
+          <button type="button" class="button secondary" id="modal-discover-btn" style="padding:7px 11px;font-size:11.5px;white-space:nowrap" title="探测端点模型需先在上方输入 API Key">🔍 探测端点可用模型</button>
+        </div>
+        <div class="field-hint" style="margin-top:2px">💡 提示：云端服务商需先输入上方 API Key 才能探测模型列表；本地 Ollama 可直接探测。</div>
+        <div id="modal-discover-box" class="discover-results hidden"></div>
+        ${defaultModelsList.length ? `
+          <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:4px">
+            <span class="field-hint" style="align-self:center">推荐选型：</span>
+            ${defaultModelsList.map(name => `<button type="button" class="preset-pill modal-quick-model" data-name="${escape(name)}" style="padding:2px 7px;font-size:10px">${escape(name)}</button>`).join('')}
+          </div>
+        ` : ''}
+      </div>
+
+      <div>
+        <button type="button" class="advanced-toggle-btn" id="modal-toggle-adv">
+          <span id="modal-adv-icon">▶</span> 高级参数与性能配额 (Token 上限、并发度、输出格式)
+        </button>
+        <div id="modal-adv-box" class="advanced-box hidden">
+          <div class="form-field">
+            <label>结构化输出模式</label>
+            <select id="modal-field-structuredOutput">
+              <option value="json_object" ${m.structuredOutput === 'json_object' ? 'selected' : ''}>json_object (推荐通用)</option>
+              <option value="json_schema" ${m.structuredOutput === 'json_schema' ? 'selected' : ''}>json_schema (Gemini / OpenAI 严格模式)</option>
+              <option value="prompt" ${m.structuredOutput === 'prompt' ? 'selected' : ''}>prompt (纯 Prompt 约束)</option>
+            </select>
+          </div>
+
+          <div class="form-field">
+            <label>Token 参数字段</label>
+            <select id="modal-field-tokenParameter">
+              <option value="max_tokens" ${m.tokenParameter !== 'max_completion_tokens' ? 'selected' : ''}>max_tokens</option>
+              <option value="max_completion_tokens" ${m.tokenParameter === 'max_completion_tokens' ? 'selected' : ''}>max_completion_tokens</option>
+            </select>
+          </div>
+
+          <div class="form-field">
+            <label>单次最大输出上限 (maxOutputTokens)</label>
+            <input type="number" id="modal-field-maxOutputTokens" value="${m.maxOutputTokens || ''}" placeholder="留空默认 131072">
+          </div>
+
+          <div class="form-field">
+            <label>最大并发数限制 (maxConcurrent)</label>
+            <input type="number" id="modal-field-maxConcurrent" value="${m.maxConcurrent || ''}" placeholder="留空无限制 (1–32)">
+          </div>
+
+          <div class="form-field">
+            <label>请求间隔毫秒 (requestIntervalMs)</label>
+            <input type="number" id="modal-field-requestIntervalMs" value="${m.requestIntervalMs || ''}" placeholder="如 2500，留空为 0">
+          </div>
+
+          <div style="grid-column:span 2;display:flex;flex-direction:column;gap:6px;margin-top:6px">
+            <label class="checkbox-row">
+              <input type="checkbox" id="modal-field-supportsReasoning" ${m.supportsReasoning !== false ? 'checked' : ''}>
+              <span>支持深度推理与思考过程 (Reasoning / Thinking)</span>
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="modal-field-supportsTemperature" ${m.supportsTemperature !== false ? 'checked' : ''}>
+              <span>支持 Temperature 采样温度调节</span>
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="modal-field-supportsSeed" ${m.supportsSeed ? 'checked' : ''}>
+              <span>支持 Seed 确定性随机数种子</span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-footer">
+      <div style="display:flex;align-items:center;gap:8px">
+        <button type="button" class="button secondary" id="modal-test-btn" style="padding:6px 12px;font-size:12px">⚡ 测试连通性</button>
+        <span id="modal-probe-status" class="probe-status"></span>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button type="button" class="button secondary" id="modal-cancel-btn">取消</button>
+        <button type="button" class="button" id="modal-save-btn">保存模型</button>
+      </div>
+    </div>
+  `;
+
+  dialog.querySelectorAll('.modal-quick-model').forEach(btn => {
+    btn.addEventListener('click', () => {
+      $('#modal-field-model').value = btn.dataset.name;
+    });
+  });
+
+  $('#modal-toggle-adv').addEventListener('click', () => {
+    const box = $('#modal-adv-box');
+    const icon = $('#modal-adv-icon');
+    const isHidden = box.classList.toggle('hidden');
+    icon.textContent = isHidden ? '▶' : '▼';
+  });
+
+  $('#modal-toggle-key-btn').addEventListener('click', () => {
+    const inp = $('#modal-field-apiKey');
+    inp.type = inp.type === 'password' ? 'text' : 'password';
+  });
+
+  const closeModal = () => { dialog.close(); };
+  $('#modal-close-x').addEventListener('click', closeModal);
+  $('#modal-cancel-btn').addEventListener('click', closeModal);
+
+  $('#modal-discover-btn').addEventListener('click', async () => {
+    const btn = $('#modal-discover-btn');
+    const baseUrl = $('#modal-field-baseUrl').value.trim();
+    const apiKey = $('#modal-field-apiKey').value.trim();
+    const protocol = $('#modal-field-protocol').value;
+    const box = $('#modal-discover-box');
+    box.classList.remove('hidden');
+
+    if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) {
+      box.innerHTML = `<span style="font-size:11px;color:#a8332a">⚠️ 请先输入有效的服务端点 Base URL（需以 http:// 或 https:// 开头）</span>`;
+      $('#modal-field-baseUrl').focus();
+      return;
+    }
+
+    let isLocalUrl = false;
+    try {
+      const u = new URL(baseUrl);
+      isLocalUrl = u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '0.0.0.0' || u.hostname === '::1';
+    } catch {}
+
+    const hasEffectiveKey = (apiKey && !apiKey.includes('•••')) || (m.hasKey && isEdit);
+
+    if (!isLocalUrl && !hasEffectiveKey) {
+      box.innerHTML = `
+        <div class="discover-key-warning">
+          <div style="font-weight:650;display:flex;align-items:center;gap:6px;margin-bottom:3px;color:#8a4200">
+            <span>🔑 需要先填入 API Key 密钥凭据</span>
+          </div>
+          <div style="font-size:11px;color:#7a440b;line-height:1.4">
+            该服务端点属于云端平台，<strong>必须先提供 API Key 身份凭据</strong>才能拉取端点支持的模型列表。<br>
+            👉 <strong>请先在上方「API Key 密钥凭据」中输入您的 Key</strong>，然后再次点击此按钮探测。
+          </div>
+        </div>
+      `;
+      const keyInput = $('#modal-field-apiKey');
+      keyInput.focus();
+      keyInput.classList.add('input-highlight-pulse');
+      setTimeout(() => keyInput.classList.remove('input-highlight-pulse'), 3000);
+      toast('💡 探测云端模型需要 API Key，请先输入 Key');
+      return;
+    }
+
+    btn.disabled = true;
+    const originalBtnText = btn.innerHTML;
+    btn.innerHTML = '<span>⏳ 探测中...</span>';
+    box.innerHTML = `<span style="font-size:11px;color:#677d64">正在请求服务端点探测可用模型列表...</span>`;
+
+    try {
+      const res = await fetch('/api/models/discover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          baseUrl,
+          apiKey: apiKey || (m.hasKey ? '__EXISTING__' : undefined),
+          protocol,
+          modelId: isEdit ? targetId : undefined
+        })
+      });
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.models) && data.models.length > 0) {
+        box.innerHTML = `
+          <div style="font-size:10.5px;color:#35563e;font-weight:600;margin-bottom:4px">找到 ${data.models.length} 个可用模型（点击即选）：</div>
+          ${data.models.slice(0, 40).map(mod => `
+            <div class="discover-item" data-id="${escape(mod.id)}">
+              <b>${escape(mod.id)}</b>
+              <small style="color:#71876e">${escape(mod.name !== mod.id ? mod.name : '')}</small>
+            </div>
+          `).join('')}
+        `;
+        box.querySelectorAll('.discover-item').forEach(item => {
+          item.addEventListener('click', () => {
+            $('#modal-field-model').value = item.dataset.id;
+            toast(`已选择模型: ${item.dataset.id}`);
+          });
+        });
+      } else {
+        if (data.needsKey || data.isAuthError) {
+          const keyInput = $('#modal-field-apiKey');
+          keyInput.focus();
+          keyInput.classList.add('input-highlight-pulse');
+          setTimeout(() => keyInput.classList.remove('input-highlight-pulse'), 3000);
+        }
+        box.innerHTML = `
+          <div style="font-size:11px;color:#a8332a;padding:4px 0">
+            <strong>⚠️ 探测未能获取模型列表：</strong><br>
+            <span>${escape(data.error || '未返回模型或需认证')}</span>
+          </div>
+        `;
+      }
+    } catch (err) {
+      box.innerHTML = `<span style="font-size:11px;color:#a8332a">⚠️ 探测请求失败: ${escape(err.message)}</span>`;
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = originalBtnText;
+    }
+  });
+
+  $('#modal-test-btn').addEventListener('click', async () => {
+    const probe = $('#modal-probe-status');
+    const typedKey = $('#modal-field-apiKey').value.trim();
+    const baseUrl = $('#modal-field-baseUrl').value.trim();
+    let isLocal = false;
+    try {
+      const u = new URL(baseUrl);
+      isLocal = u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+    } catch {}
+
+    if (!isLocal && !typedKey && !(m.hasKey && isEdit)) {
+      probe.className = 'probe-status failed';
+      probe.textContent = '✗ 缺少 API Key';
+      const keyInput = $('#modal-field-apiKey');
+      keyInput.focus();
+      keyInput.classList.add('input-highlight-pulse');
+      setTimeout(() => keyInput.classList.remove('input-highlight-pulse'), 3000);
+      toast('💡 请先输入 API Key 再进行连通性测试');
+      return;
+    }
+
+    probe.className = 'probe-status loading';
+    probe.textContent = '测试中...';
+
+    const draftConfig = {
+      id: $('#modal-field-id').value.trim(),
+      baseUrl: $('#modal-field-baseUrl').value.trim(),
+      model: $('#modal-field-model').value.trim(),
+      protocol: $('#modal-field-protocol').value,
+      structuredOutput: $('#modal-field-structuredOutput').value,
+      tokenParameter: $('#modal-field-tokenParameter').value,
+      supportsTemperature: $('#modal-field-supportsTemperature').checked,
+      supportsReasoning: $('#modal-field-supportsReasoning').checked,
+      supportsSeed: $('#modal-field-supportsSeed').checked,
+      maxOutputTokens: $('#modal-field-maxOutputTokens').value ? Number($('#modal-field-maxOutputTokens').value) : null,
+      maxConcurrent: $('#modal-field-maxConcurrent').value ? Number($('#modal-field-maxConcurrent').value) : null,
+      requestIntervalMs: $('#modal-field-requestIntervalMs').value ? Number($('#modal-field-requestIntervalMs').value) : null
+    };
+
+    try {
+      const res = await fetch('/api/models/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          modelConfig: draftConfig,
+          apiKey: typedKey || (m.hasKey ? undefined : '')
+        })
+      });
+      const d = await res.json();
+      if (d.ok) {
+        probe.className = 'probe-status success';
+        probe.textContent = `✓ 正常 (${d.latencyMs}ms)`;
+      } else {
+        probe.className = 'probe-status failed';
+        probe.textContent = `✗ 失败: ${d.error || '连接失败'}`;
+      }
+    } catch (err) {
+      probe.className = 'probe-status failed';
+      probe.textContent = `✗ 异常: ${err.message}`;
+    }
+  });
+
+  $('#modal-save-btn').addEventListener('click', () => {
+    const id = $('#modal-field-id').value.trim();
+    const baseUrl = $('#modal-field-baseUrl').value.trim();
+    const model = $('#modal-field-model').value.trim();
+    const protocol = $('#modal-field-protocol').value;
+    const apiKey = $('#modal-field-apiKey').value.trim();
+
+    if (!id || !/^[A-Za-z0-9_-]+$/.test(id)) {
+      alert('请输入合法的模型 ID（仅支持字母、数字、下划线和短横线）');
+      return;
+    }
+    if (!baseUrl || !/^https?:\/\//.test(baseUrl)) {
+      alert('请输入有效的 HTTP(S) Base URL');
+      return;
+    }
+    if (!model) {
+      alert('请输入模型名称');
+      return;
+    }
+
+    const c = state.config.liveConfig ?? state.config.mockConfig;
+    const existingIndex = c.models.findIndex(x => x.id === (isEdit ? targetId : id));
+    if (!isEdit && existingIndex >= 0) {
+      alert(`模型 ID "${id}" 已存在，请更换 ID`);
+      return;
+    }
+
+    const updatedModel = {
+      ...(existingIndex >= 0 ? c.models[existingIndex] : {}),
+      id,
+      model,
+      baseUrl,
+      protocol,
+      structuredOutput: $('#modal-field-structuredOutput').value,
+      tokenParameter: $('#modal-field-tokenParameter').value,
+      supportsTemperature: $('#modal-field-supportsTemperature').checked,
+      supportsReasoning: $('#modal-field-supportsReasoning').checked,
+      supportsSeed: $('#modal-field-supportsSeed').checked,
+      maxOutputTokens: $('#modal-field-maxOutputTokens').value ? Number($('#modal-field-maxOutputTokens').value) : null,
+      maxConcurrent: $('#modal-field-maxConcurrent').value ? Number($('#modal-field-maxConcurrent').value) : null,
+      requestIntervalMs: $('#modal-field-requestIntervalMs').value ? Number($('#modal-field-requestIntervalMs').value) : null
+    };
+
+    if (apiKey) {
+      updatedModel.apiKey = apiKey;
+      updatedModel.hasKey = true;
+      updatedModel.maskedKey = apiKey.length > 8 ? `${apiKey.slice(0, 4)}••••${apiKey.slice(-4)}` : '••••••••';
+    } else if (!isEdit) {
+      const isLocal = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1');
+      if (isLocal) {
+        updatedModel.isKeyless = true;
+        updatedModel.hasKey = true;
+      }
+    }
+
+    if (existingIndex >= 0) {
+      c.models[existingIndex] = updatedModel;
+    } else {
+      c.models.push(updatedModel);
+    }
+
+    closeModal();
+    renderConfig();
+    toast(`已更新模型 "${id}" 到待保存列表。点击下方“💾 保存配置并即时生效”即可永久保存。`);
+  });
+
+  dialog.showModal();
+}
+
+function openDeleteConfirmDialog(modelId) {
+  const dialog = $('#delete-confirm-dialog');
+  if (!dialog) return;
+  const c = state.config.liveConfig ?? state.config.mockConfig;
+  if (c.models.length <= 1) {
+    alert('至少需要保留 1 个模型，无法删除全部模型。');
+    return;
+  }
+
+  const affectedSeats = (c.seats || []).filter(s => s.modelId === modelId).map(s => s.id);
+  const affectedRoles = Object.entries(c.roles || {}).filter(([r, m]) => m === modelId).map(([r]) => r);
+
+  dialog.innerHTML = `
+    <div class="modal-header">
+      <h3 style="color:#a8332a">🗑️ 确认删除模型 · ${escape(modelId)}</h3>
+      <button type="button" class="dialog-close" id="del-close-x">×</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;line-height:1.6;color:var(--ink)">
+        确定要从模型列表中移除 <b>${escape(modelId)}</b> 吗？
+      </p>
+      ${affectedSeats.length || affectedRoles.length ? `
+        <div class="error-box" style="margin-bottom:0;padding:10px 14px">
+          ⚠️ <b>席位与角色关联提示</b>：<br>
+          ${affectedSeats.length ? `席位 [${affectedSeats.join(', ')}] ` : ''}
+          ${affectedRoles.length ? `角色 [${affectedRoles.join(', ')}] ` : ''}
+          当前使用了该模型。<br>
+          删除后系统将自动将其重映射至首个可用模型。
+        </div>
+      ` : ''}
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="button secondary" id="del-cancel-btn">取消</button>
+      <button type="button" class="button danger-button" id="del-confirm-btn">确认删除</button>
+    </div>
+  `;
+
+  const closeDialog = () => { dialog.close(); };
+  $('#del-close-x').addEventListener('click', closeDialog);
+  $('#del-cancel-btn').addEventListener('click', closeDialog);
+
+  $('#del-confirm-btn').addEventListener('click', () => {
+    c.models = c.models.filter(m => m.id !== modelId);
+    const fallbackId = c.models[0].id;
+    if (c.seats) {
+      for (const s of c.seats) {
+        if (s.modelId === modelId) s.modelId = fallbackId;
+      }
+    }
+    if (c.roles) {
+      for (const r of ['chair', 'dedup', 'dealer']) {
+        if (c.roles[r] === modelId) c.roles[r] = fallbackId;
+      }
+    }
+    closeDialog();
+    renderConfig();
+    toast(`已删除模型 "${modelId}"。请点击下方“💾 保存配置并即时生效”以持久化生效。`);
+  });
+
+  dialog.showModal();
+}
+
 function renderConfig() {
   const c = state.config.liveConfig ?? state.config.mockConfig;
   const rp = state.config.routingPreview;
@@ -462,41 +1262,69 @@ function renderConfig() {
 
   let bannerHtml = '';
   if (activeCount === 0) {
-    bannerHtml = `<div class="config-adaptive-banner warn">⚠️ <b>尚未配置任何可用模型的 API Key</b><br><span style="font-size:11px">请在下方至少为一个模型填入 API Key 并点击保存。即使只配 1 个模型，系统也将自动调度 8 席正常运行。</span></div>`;
+    bannerHtml = `<div class="config-adaptive-banner warn">⚠️ <b>尚未配置任何可用模型的 API Key</b><br><span style="font-size:11px">请在下方至少为一个模型填入 API Key 并点击保存。即使只配 1 个模型，系统也将自动调度 ${c.seats.length} 席正常运行。</span></div>`;
   } else if (activeCount === 1) {
-    bannerHtml = `<div class="config-adaptive-banner">💡 <b>单模型自适应模式已就绪 (已激活: ${escape(activeNames)})</b><br><span style="font-size:11px">您无需填写其他模型！系统已自动将 8 个推演席位及裁决角色调度至该模型。各席位依旧获得不同的专业认知算子激发与独立种子多维推演，推演多样性完全保留。</span></div>`;
+    bannerHtml = `<div class="config-adaptive-banner">💡 <b>单模型自适应模式已就绪 (已激活: ${escape(activeNames)})</b><br><span style="font-size:11px">您无需填写其他模型！系统已自动将 ${c.seats.length} 个推演席位及裁决角色调度至该模型。各席位依旧获得不同的专业认知算子激发与独立种子多维推演，推演多样性完全保留。</span></div>`;
   } else if (activeCount < totalCount) {
     bannerHtml = `<div class="config-adaptive-banner">💡 <b>多模型均衡协同模式已就绪 (已激活: ${activeCount}/${totalCount} 个模型 [${escape(activeNames)}])</b><br><span style="font-size:11px">通用 K-of-M 自适应机制已生效：未配置 Key 的模型席位将自动按最大多样性均衡平摊至已激活模型中，无任何席位浪费。</span></div>`;
   } else {
-    bannerHtml = `<div class="config-adaptive-banner">🟢 <b>全异构多模型协作模式就绪 (所有 ${totalCount} 个模型均已配置)</b><br><span style="font-size:11px">8 席推演将完全按照原始异构配置分工运转。</span></div>`;
+    bannerHtml = `<div class="config-adaptive-banner">🟢 <b>全异构多模型协作模式就绪 (所有 ${totalCount} 个模型均已配置)</b><br><span style="font-size:11px">${c.seats.length} 席推演将完全按照原始异构配置分工运转。</span></div>`;
   }
 
   $('#main').innerHTML = `
-    ${heading('MODELS & API KEYS', '配置大模型凭据与席位规则', '本地持久化保存，下次无需重复填写；支持任意 K 个模型自适应运行。')}
+    ${heading('MODELS & API KEYS', '配置大模型选型与席位规则', '自由添加任何 OpenAI 兼容或 Gemini 原生模型；本地持久化保存，支持任意 K 个模型自适应排席。')}
     ${bannerHtml}
     
     <div class="config-grid">
       <section class="card">
         <div class="card-head">
-          <h2>大模型 API Key 凭据与连通测试</h2>
-          <small>${activeCount} / ${totalCount} 已就绪</small>
+          <h2>大模型选型与服务商配置</h2>
+          <div style="display:flex;align-items:center;gap:10px">
+            <small>${activeCount} / ${totalCount} 已就绪</small>
+            <button type="button" class="button" id="top-add-model-btn" style="padding:4px 12px;font-size:11.5px">➕ 添加模型</button>
+          </div>
         </div>
-        <p class="small-note" style="margin-bottom:14px">填入 Key 并保存后持久化存入本地 <code>config.local.json</code>。外部 Agent 调用 MCP 时亦将自动读取本地凭据（Claude Code / Cursor 零配置感知）。</p>
-        
+
+        <div class="model-presets-wrap">
+          <div class="model-presets-title">
+            <span>✨ 常用服务商模版一键填入：</span>
+          </div>
+          <div class="model-presets-bar">
+            ${MODEL_PRESETS.map(p => `
+              <button type="button" class="preset-pill preset-pill-btn" data-preset="${escape(p.id)}">
+                <span>${p.icon}</span> ${escape(p.label)}
+              </button>
+            `).join('')}
+          </div>
+        </div>
+
         <div class="config-models-container">
           ${c.models.map(m => `
-            <div class="config-model-card">
+            <div class="config-model-card" data-model-id="${escape(m.id)}">
               <div class="config-model-card-top">
                 <div class="config-model-title">
                   <b>${escape(m.id)}</b> <span class="muted">· ${escape(m.model)}</span>
-                  <span class="chip ${m.hasKey ? '' : 'failed'}" style="font-size:10px">${m.hasKey ? '🟢 已就绪' + (m.keySource === 'env' ? ' (环境变量)' : '') : '⚪ 未配置'}</span>
+                  <span class="model-badge">${m.protocol === 'gemini' ? 'Gemini 原生' : 'OpenAI 兼容'}</span>
+                  <span class="chip ${m.hasKey ? '' : 'failed'}" style="font-size:10px">
+                    ${m.hasKey ? '🟢 已就绪' + (m.keySource === 'env' ? ' (环境变量)' : (m.isKeyless || (m.baseUrl && (m.baseUrl.includes('localhost') || m.baseUrl.includes('127.0.0.1'))) ? ' (免密钥)' : '')) : '⚪ 未配置'}
+                  </span>
                 </div>
-                <div style="display:flex;align-items:center;gap:8px">
+                <div class="model-card-actions">
                   <span id="probe-${escape(m.id)}" class="probe-status"></span>
-                  <button type="button" class="button secondary test-model-btn" data-model="${escape(m.id)}" style="padding:4px 10px;font-size:11px">⚡ 测试连通性</button>
+                  <button type="button" class="button secondary test-model-btn" data-model="${escape(m.id)}" style="padding:4px 9px;font-size:11px">⚡ 测试连通性</button>
+                  <button type="button" class="button secondary edit-model-btn" data-model="${escape(m.id)}" style="padding:4px 9px;font-size:11px">✏️ 编辑</button>
+                  ${c.models.length > 1 ? `<button type="button" class="button secondary danger-button delete-model-btn" data-model="${escape(m.id)}" style="padding:4px 9px;font-size:11px">🗑️ 删除</button>` : ''}
                 </div>
               </div>
-              <div class="small-note">${escape(m.baseUrl)}</div>
+              <div class="config-model-desc">
+                <span>${escape(m.baseUrl)}</span>
+                <span class="muted">|</span>
+                <span>${escape(m.structuredOutput || 'json_object')}</span>
+                <span>${escape(m.tokenParameter || 'max_tokens')}</span>
+                ${m.maxConcurrent ? `<span>并发:${m.maxConcurrent}</span>` : ''}
+                ${m.requestIntervalMs ? `<span>间隔:${m.requestIntervalMs}ms</span>` : ''}
+                ${m.supportsReasoning ? '<span class="model-badge">支持推理思考</span>' : ''}
+              </div>
               <div class="config-key-row">
                 <input type="password" id="cfg-key-${escape(m.id)}" class="config-key-input" placeholder="${m.hasKey ? (m.maskedKey || '已配置密钥 (输入新值以替换)') : '输入 API Key (如 sk-...)'}">
                 <button type="button" class="config-icon-btn toggle-key-btn" data-model="${escape(m.id)}" title="显示/隐藏明文">👁️</button>
@@ -537,14 +1365,18 @@ function renderConfig() {
         </div>
 
         <div>
-          <div class="small-note" style="margin-bottom:6px;font-weight:600;color:var(--ink)">8 个创意推演席位模型分配：</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <div class="small-note" style="font-weight:600;color:var(--ink)">${c.seats.length} 个创意推演席位模型分配 (全局默认)：</div>
+            <button type="button" class="button secondary" id="config-add-seat-btn" style="padding:3px 9px;font-size:11px">➕ 添加席位</button>
+          </div>
           <div class="config-seats-grid">
             ${c.seats.map((s, idx) => `
               <div class="config-seat-cell">
-                <span class="config-seat-tag">${escape(s.id)}</span>
+                <input type="text" class="config-seat-id-input" data-idx="${idx}" value="${escape(s.id)}" maxlength="12" title="席位标识">
                 <select class="config-select seat-config-select" data-idx="${idx}">
                   ${c.models.map(m => `<option value="${escape(m.id)}" ${s.modelId === m.id ? 'selected' : ''}>${escape(m.id)} ${m.hasKey ? '🟢' : '⚪'}</option>`).join('')}
                 </select>
+                <button type="button" class="config-seat-del-btn" data-idx="${idx}" title="删除该席位" ${c.seats.length <= 1 ? 'disabled style="visibility:hidden"' : ''}>×</button>
               </div>
             `).join('')}
           </div>
@@ -573,7 +1405,37 @@ function renderConfig() {
     </section>
   `;
 
-  // Bind Event Listeners for Configuration Panel
+  // Bind Presets Buttons
+  document.querySelectorAll('.preset-pill-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const pid = btn.dataset.preset;
+      const preset = MODEL_PRESETS.find(p => p.id === pid);
+      if (preset) openModelModal(preset, false);
+    });
+  });
+
+  // Top Add Model Button
+  $('#top-add-model-btn')?.addEventListener('click', () => {
+    openModelModal(MODEL_PRESETS[0], false);
+  });
+
+  // Edit Model Buttons
+  document.querySelectorAll('.edit-model-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const mid = btn.dataset.model;
+      const target = c.models.find(m => m.id === mid);
+      if (target) openModelModal(target, true);
+    });
+  });
+
+  // Delete Model Buttons
+  document.querySelectorAll('.delete-model-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      openDeleteConfirmDialog(btn.dataset.model);
+    });
+  });
+
+  // Toggle password eye
   document.querySelectorAll('.toggle-key-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const mid = btn.dataset.model;
@@ -583,6 +1445,7 @@ function renderConfig() {
     });
   });
 
+  // Test model button
   document.querySelectorAll('.test-model-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const mid = btn.dataset.model;
@@ -612,7 +1475,51 @@ function renderConfig() {
     });
   });
 
+  const syncConfigSeatsFromDom = () => {
+    document.querySelectorAll('.config-seat-cell').forEach(cell => {
+      const idInp = cell.querySelector('.config-seat-id-input');
+      const modelSel = cell.querySelector('.seat-config-select');
+      const idx = Number(modelSel?.dataset.idx);
+      if (c.seats[idx] && idInp && modelSel) {
+        const val = idInp.value.trim();
+        if (val) c.seats[idx].id = val;
+        c.seats[idx].modelId = modelSel.value;
+      }
+    });
+  };
+
+  // Add seat in config
+  $('#config-add-seat-btn')?.addEventListener('click', () => {
+    syncConfigSeatsFromDom();
+    if (c.seats.length >= 32) {
+      toast('⚠️ 最多支持 32 个席位');
+      return;
+    }
+    const nextId = getNextSeatId(c.seats);
+    c.seats.push({ id: nextId, modelId: c.models[0]?.id || 'GLM' });
+    renderConfig();
+    toast(`➕ 已添加席位 ${nextId}，点击下方保存即可生效`);
+  });
+
+  // Delete seat in config
+  document.querySelectorAll('.config-seat-del-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      syncConfigSeatsFromDom();
+      if (c.seats.length <= 1) {
+        toast('⚠️ 至少保留 1 个席位');
+        return;
+      }
+      const idx = Number(btn.dataset.idx);
+      const delId = c.seats[idx]?.id;
+      c.seats.splice(idx, 1);
+      renderConfig();
+      toast(`已移除席位 ${delId}，点击下方保存即可生效`);
+    });
+  });
+
+  // Auto balance seats
   $('#auto-balance-seats-btn')?.addEventListener('click', () => {
+    syncConfigSeatsFromDom();
     const active = c.models.filter(m => {
       const inp = document.getElementById(`cfg-key-${m.id}`);
       return m.hasKey || (inp && inp.value.trim());
@@ -622,33 +1529,42 @@ function renderConfig() {
       return;
     }
     const counts = new Map(active.map(m => [m.id, 0]));
-    document.querySelectorAll('.seat-config-select').forEach(sel => {
+    c.seats.forEach(s => {
       let minCount = Infinity;
       let targetId = active[0].id;
       for (const m of active) {
-        const c = counts.get(m.id) || 0;
-        if (c < minCount) {
-          minCount = c;
+        const cnt = counts.get(m.id) || 0;
+        if (cnt < minCount) {
+          minCount = cnt;
           targetId = m.id;
         }
       }
-      sel.value = targetId;
+      s.modelId = targetId;
       counts.set(targetId, minCount + 1);
     });
-    toast(`✅ 已按 ${active.length} 个可用模型完成 8 席均衡分配！请点击保存生效。`);
+    renderConfig();
+    toast(`✅ 已按 ${active.length} 个可用模型完成 ${c.seats.length} 席均衡分配！请点击保存生效。`);
   });
 
+  // Save config
   $('#save-config-btn')?.addEventListener('click', async () => {
+    syncConfigSeatsFromDom();
+    const seatIds = c.seats.map(s => s.id.trim());
+    if (seatIds.some(id => !id || !/^[A-Za-z0-9_-]+$/.test(id))) {
+      toast('⚠️ 席位标识不能为空，且仅支持英文字母、数字、下划线和短横线');
+      return;
+    }
+    if (new Set(seatIds).size !== seatIds.length) {
+      toast('⚠️ 存在重复的席位标识，请确保每个席位 ID 唯一');
+      return;
+    }
+
     const base = state.config.liveConfig || state.config.mockConfig;
     const updated = structuredClone(base);
     updated.roles.chair = $('#cfg-role-chair').value;
     updated.roles.dedup = $('#cfg-role-dedup').value;
     updated.roles.dealer = $('#cfg-role-dealer').value;
-
-    document.querySelectorAll('.seat-config-select').forEach(sel => {
-      const idx = Number(sel.dataset.idx);
-      if (updated.seats[idx]) updated.seats[idx].modelId = sel.value;
-    });
+    updated.seats = structuredClone(c.seats);
 
     updated.models = updated.models.map(m => {
       const inp = document.getElementById(`cfg-key-${m.id}`);
@@ -668,7 +1584,7 @@ function renderConfig() {
       });
       const d = await res.json();
       if (d.ok) {
-        toast('✅ 配置与 API Key 已持久化保存并实时生效！');
+        toast('✅ 配置与模型选型已持久化保存为全局默认配置！');
         state.config = await api('/api/config');
         renderConfig();
       } else {
@@ -875,7 +1791,7 @@ async function openRun(id) {
   finally { loading = false; }
 }
 function saveDraft() { if (!$('#run-form')) return; for (const key of ['problem', 'constraints', 'experiment']) { const el = $(`#${key}`); if (el) state.draft[key] = el.value; } const seedEl = $('#seed'); if (seedEl) state.draft.seed = Number(seedEl.value); const opEl = $('#use-operators'); if (opEl) state.draft.use_operators = opEl.checked; const domainOpEl = $('#use-domain-operators'); if (domainOpEl) state.draft.use_domain_operators = domainOpEl.checked; state.draft.mode = 'live'; }
-function newRun() { typingStreams.clear(); disconnectEventSource(); saveDraft(); state.page = 'workspace'; state.run = null; location.hash = ''; render(); }
+function newRun() { typingStreams.clear(); disconnectEventSource(); saveDraft(); state.draft.customSeats = null; state.draft.customRoles = null; state.page = 'workspace'; state.run = null; location.hash = ''; render(); }
 $('#new-run').addEventListener('click', newRun);
 for (const page of ['workspace', 'compare', 'config']) $(`#${page}-nav`).addEventListener('click', () => { saveDraft(); state.page = page; render(); });
 $('#help-button').addEventListener('click', () => $('#help-dialog').showModal());
@@ -896,11 +1812,28 @@ document.addEventListener('click', async e => {
     if (e.target.closest('#cancel-run')) { disconnectEventSource(); await api(`/api/runs/${state.run.id}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); toast('正在停止，已完成的记录会保留'); }
   } catch (err) { toast(err.message); }
 });
-document.addEventListener('change', e => { if (e.target.id === 'experiment') { saveDraft(); renderNew(); } });
+document.addEventListener('change', e => { if (['experiment', 'use-operators', 'use-domain-operators'].includes(e.target.id)) { saveDraft(); renderNew(); } });
 document.addEventListener('submit', async e => {
   if (e.target.id !== 'run-form') return; e.preventDefault(); saveDraft();
   const button = e.target.querySelector('[type="submit"]'); button.disabled = true; button.textContent = '正在创建…';
-  try { const d = state.draft; const run = await api('/api/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...d, mode: 'live', constraints: d.constraints.split('\n').map(c => c.trim()).filter(Boolean) }) }); state.activeId = run.id; await openRun(run.id); await refresh(); }
+  try {
+    const d = state.draft;
+    const { seats: sessionSeats, roles: sessionRoles } = getSessionSeatsAndRoles();
+    const run = await api('/api/runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...d,
+        seats: sessionSeats,
+        roles: sessionRoles,
+        mode: 'live',
+        constraints: d.constraints.split('\n').map(c => c.trim()).filter(Boolean)
+      })
+    });
+    state.activeId = run.id;
+    await openRun(run.id);
+    await refresh();
+  }
   catch (err) { toast(err.message); renderNew(); }
 });
 async function refresh() {

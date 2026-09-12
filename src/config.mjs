@@ -14,7 +14,13 @@ export function getModelApiKey(model) {
 export function isModelAvailable(model, mode = 'live') {
   if (mode === 'mock') return true;
   if (!model) return false;
-  if (model.apiKeyEnv === null && !model.apiKey) return true;
+  if (model.isKeyless || (model.apiKeyEnv === null && !model.apiKey)) return true;
+  try {
+    const u = new URL(model.baseUrl);
+    if ((u.hostname === 'localhost' || u.hostname === '127.0.0.1') && !model.apiKey && !model.apiKeyEnv) {
+      return true;
+    }
+  } catch {}
   return getModelApiKey(model) !== null;
 }
 
@@ -112,6 +118,27 @@ export async function saveConfig(root, newConfig) {
       }
     }
   }
+
+  // Fallback for seats and roles if a model was deleted
+  const validModelIds = new Set(newConfig.models.map(m => m.id));
+  const fallbackModelId = newConfig.models[0]?.id;
+  if (fallbackModelId) {
+    if (Array.isArray(newConfig.seats)) {
+      for (const seat of newConfig.seats) {
+        if (!validModelIds.has(seat.modelId)) {
+          seat.modelId = fallbackModelId;
+        }
+      }
+    }
+    if (newConfig.roles) {
+      for (const roleKey of ['chair', 'dedup', 'dealer']) {
+        if (!validModelIds.has(newConfig.roles[roleKey])) {
+          newConfig.roles[roleKey] = fallbackModelId;
+        }
+      }
+    }
+  }
+
   validateConfig(newConfig, 'live');
   const targetPath = `${root}/config.local.json`;
   await writeFile(targetPath, JSON.stringify(newConfig, null, 2) + '\n', 'utf8');
@@ -170,6 +197,7 @@ export function validateConfig(c, mode, { allowKeyless = false } = {}) {
   assert(c.retryDelayMs == null || (Number.isFinite(c.retryDelayMs) && c.retryDelayMs >= 0), 'retryDelayMs 无效');
   for (const k of ['minimumCreativeRatio', 'minimumDecisionRatio']) assert(c[k] > 0 && c[k] <= 1, `${k} 须大于0且不超过1`);
   for (const m of c.models) {
+    assert(m.id && typeof m.id === 'string' && /^[A-Za-z0-9_-]+$/.test(m.id), `模型 ID "${m?.id}" 格式无效，仅支持字母、数字、下划线和短横线`);
     assert(m.maxOutputTokens == null || (Number.isInteger(m.maxOutputTokens) && m.maxOutputTokens > 0), 'maxOutputTokens 无效');
     assert(m.maxConcurrent == null || (Number.isInteger(m.maxConcurrent) && m.maxConcurrent >= 1 && m.maxConcurrent <= 32), 'maxConcurrent 须为1–32');
     assert(m.requestIntervalMs == null || (Number.isFinite(m.requestIntervalMs) && m.requestIntervalMs >= 0), 'requestIntervalMs 无效');

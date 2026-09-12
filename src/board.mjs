@@ -1,6 +1,33 @@
-import { assert, schemas, validateSchema } from './schema.mjs';
+import { assert, schemas, validateSchema, normalizePointId } from './schema.mjs';
 export const emptyBoard = () => ({ version: 0, points: [], rendered_text: '' });
 export function renderBoard(points) { return points.map(p => `#${p.point_id} (rev ${p.current_revision})\n${p.text}`).join('\n\n'); }
+// Salvage a dedup plan before judging it. Only formatting mistakes are repaired: a rendered
+// "#P001" reference becomes "P001", and keys the schema does not allow are dropped. Nothing
+// semantic is invented — an ADD group with no result_text is still rejected.
+export function salvagePlan(plan) {
+  const repairs = [];
+  if (plan === null || typeof plan !== 'object' || Array.isArray(plan)) return { plan, repairs };
+  const clean = {};
+  for (const [key, value] of Object.entries(plan)) {
+    if (key === 'groups') clean.groups = value;
+    else repairs.push(`删除未定义字段 ${key}`);
+  }
+  if (Array.isArray(clean.groups)) {
+    for (const group of clean.groups) {
+      if (group === null || typeof group !== 'object' || Array.isArray(group)) continue;
+      if (typeof group.target_point_id === 'string' && group.target_point_id.startsWith('#')) {
+        repairs.push(`目标引用 ${group.target_point_id} 归一化为 ${normalizePointId(group.target_point_id)}`);
+        group.target_point_id = normalizePointId(group.target_point_id);
+      }
+    }
+  }
+  return { plan: Object.hasOwn(clean, 'groups') ? clean : plan, repairs };
+}
+// Last-resort plan used when the dedup call cannot be salvaged. Candidates become new points
+// instead of being dropped: the round's observations survive and later rounds can still read them.
+export function fallbackAddAllPlan(candidates) {
+  return { groups: candidates.filter(c => typeof c?.text === 'string' && c.text.trim()).map(c => ({ target_point_id: null, result_text: c.text, decisions: [{ candidate_id: c.candidate_id, action: 'ADD', reason_code: 'novel' }] })) };
+}
 export function validatePlan(plan, candidates, board) {
   validateSchema(plan, schemas.dedup);
   const seen = new Set(), targets = new Set();

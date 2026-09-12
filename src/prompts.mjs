@@ -24,7 +24,16 @@ export function messages(phase, run, ctx = {}) {
     const stimuli = ops.length ? `\n\n【本轮内部思维刺激】\n这些内容只用于改变你检查问题的方式。不得在交付文字中提及算子名，也不得照搬其中的例子、比喻、机制名或术语。\n\n${ops.map((o, i) => `${i + 1}. ${o.name}｜${o.family}\n${o.prompt}`).join('\n\n')}` : '\n\n【本轮内部思维刺激】\n本实验未使用思维刺激';
     body += `${banned}${stimuli}\n\n这是第 ${ctx.round} 轮。${run.experiment === 'single' ? '这是单轮实验，本次必须产出至少一个完整方案，随后仅排序，没有后续完善轮次。' : '请基于同轮冻结的完整上下文推进观点或方案。'}`;
   }
-  if (['creative', 'decision'].includes(phase)) body += `\n\n【当前完整 meeting_board】\n${ctx.board.rendered_text || '当前为空'}\n\n【已有完整方案及修订版本】\n${JSON.stringify(proposalContext(ctx.proposals ?? []))}`;
+  if (['creative', 'decision'].includes(phase)) {
+    const available = proposalContext(ctx.proposals ?? []);
+    // State the provenance explicitly: the pool holds only the rounds already completed. A model that
+    // reads its own round number from the IDs assumes a whole extra round exists and invents ids from it.
+    const rounds = [...new Set(available.map(p => p.proposal_id.match(/^S-R(\d+)-/)?.[1]).filter(Boolean))].map(Number).sort((a, b) => a - b);
+    const provenance = rounds.length
+      ? `这里的方案来自已完成的第 ${rounds.join('、')} 轮，共 ${available.length} 个版本。第 ${ctx.round} 轮同轮其他席位的方案此刻尚未产生，不存在于本次输入中：只能引用上面列出的这些 ID，不得引用任何未列出的 ID。`
+      : '目前没有任何已完成的方案可用，只能提出新方案。';
+    body += `\n\n【当前完整 meeting_board】\n${ctx.board.rendered_text || '当前为空'}\n\n【已有完整方案及修订版本】\n${provenance}\n${JSON.stringify(available)}`;
+  }
   if (phase === 'dedup') body += `\n\n【当前 meeting_board】\n${ctx.board.rendered_text || '空'}\n\n【候选原子观点】\n${JSON.stringify(ctx.candidates)}`;
   if (phase === 'chair') body += `\n\n【全部待排序完整方案】\n${JSON.stringify(proposalContext(ctx.proposals))}\n\n必须覆盖全部 ${ctx.proposals.length} 个方案 ID，仅改变展示顺序。`;
   return [{ role: 'system', content: systems[phase] }, { role: 'user', content: body }];

@@ -43,7 +43,10 @@ export function auditRun(run) {
     checks, passed: Object.values(checks).every(Boolean), metrics: run.metrics, rounds: run.round_metrics,
     successful_seats_by_round: creativeRounds.map(round => ({ round, count: run.raw_responses.filter(r => r.round === round && r.status === 'completed').length })),
     successful_decision_seats: run.memos.filter(m => m.status === 'completed').length,
-    failures: run.calls.filter(c => c.status === 'failed').map(c => ({ phase: c.phase, round: c.round, seat: c.seat_id, error: c.error })),
+    failures: run.calls.filter(c => c.status === 'failed').map(c => ({ phase: c.phase, round: c.round, seat: c.seat_id, error: c.error, salvaged: c.salvaged === true, salvage_repairs: c.salvage_repairs ?? null })),
+    // A degraded round or a degraded ranking is still a completed run, so it is reported separately
+    // from failures. Without this a salvaged or degraded result reads exactly like a clean one.
+    degraded: run.degraded ?? null,
     semantic_review_signals: { point_length_p50: percentile(.5), point_length_p95: percentile(.95), longest_point: lengths.at(-1) ?? null, points_over_150_characters: board.points.filter(p => [...p.text].length > 150).map(p => p.point_id), note: '流程校验不代表方案正确、完整或排序客观。新流程检查完整方案保留与排序覆盖；旧版采用指标是Chair自报。' }
   };
 }
