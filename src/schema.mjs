@@ -35,7 +35,7 @@ export const schemas = {
   creative: obj({ reasoning: str, contributions: arr(obj({ text: str, type: { type: 'string', enum: types }, failure_condition: str })), proposals: arr(proposal) }),
   dedup: obj({ groups: arr(obj({ target_point_id: nullable, result_text: nullable, decisions: arr(obj({ candidate_id: str, action: { type: 'string', enum: ['ADD', 'MERGE', 'DROP'] }, reason_code: { type: 'string', enum: reasons } })) })) }),
   decision: obj({ proposals: arr(proposal) }),
-  chair: obj({ rankings: arr(obj({ proposal_id: str, reason: str })) }),
+  chair: obj({ rankings: arr(obj({ proposal_id: str, summary: str, reason: str })) }),
   direct: obj({ text: str }),
   dealer: obj({ reasoning: str, selected_operator_ids: arr(str) })
 };
@@ -155,6 +155,7 @@ export function validateRanking(data, proposals) {
   for (const row of data.rankings) {
     assert(ids.has(row.proposal_id), '排序引用了不存在的方案');
     assert(!seen.has(row.proposal_id), '方案排序重复');
+    assert(row.summary && row.summary.trim(), '方案一句话总结不能为空');
     assert(row.reason.trim(), '排序理由不能为空');
     seen.add(row.proposal_id);
   }

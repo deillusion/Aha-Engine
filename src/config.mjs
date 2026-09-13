@@ -169,6 +169,10 @@ export async function loadConfig(root, mode = 'mock', { allowKeyless = false } =
   if (config.generation) {
     delete config.generation.extractor;
     if (!config.generation.dealer) config.generation.dealer = structuredClone(config.generation.chair || config.generation.creative || { max_output_tokens: 1024, temperature: 0.2 });
+    if (config.generation.dedup && config.generation.dedup.reasoning_effort === 'low') {
+      config.generation.dedup.reasoning_effort = 'none';
+      config.generation.dedup.thinking ??= 'disabled';
+    }
   }
   validateConfig(config, mode, { allowKeyless });
   return config;
@@ -185,6 +189,7 @@ export function validateConfig(c, mode, { allowKeyless = false } = {}) {
     const g = c.generation?.[phase];
     assert(g && Number.isInteger(g.max_output_tokens) && g.max_output_tokens > 0, `${phase} token 上限错误`);
     assert(Number.isFinite(g.temperature) && g.temperature >= 0 && g.temperature <= 2, `${phase} temperature 错误`);
+    assert(g.thinking == null || ['enabled', 'disabled'].includes(g.thinking), `${phase} thinking 必须是 enabled 或 disabled`);
   }
   if (c.generation?.dealer) {
     const g = c.generation.dealer;

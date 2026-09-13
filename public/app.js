@@ -5,7 +5,7 @@ const percent = n => n == null ? '—' : `${Math.round(n * 100)}%`;
 const statusNames = { running: '运行中', completed: '已完成', failed: '失败', cancelled: '已停止', interrupted: '已中断' };
 // Keep the retired phase label for existing run archives.
 const phaseNames = { creative: '创意发言', extractor: '提取观点（旧版）', dedup: '去重合并', decision: '完善候选方案', chair: '方案排序', direct: '直接回答' };
-const state = { page: 'workspace', runs: [], run: null, config: null, activeId: null, tab: 'board', round: null, filter: '', fingerprint: '', draft: { problem: '', constraints: '', mode: 'live', experiment: 'treatment', seed: 20260909, max_mechanisms: 3, use_operators: true, use_domain_operators: false } };
+const state = { page: 'workspace', runs: [], run: null, config: null, activeId: null, tab: 'board', round: null, filter: '', fingerprint: '', historyMode: 'live', compareMode: 'live', draft: { problem: '', constraints: '', mode: 'live', experiment: 'treatment', seed: 20260909, max_mechanisms: 3, use_operators: true, use_domain_operators: false } };
 let toastTimer, polling = false, loading = false;
 async function api(path, options = {}) { const res = await fetch(path, options); const data = await res.json(); if (!res.ok) throw new Error(data.error || '请求失败'); return data; }
 function toast(text) { $('#toast').textContent = text; $('#toast').classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.add('hidden'), 6000); }
@@ -25,8 +25,25 @@ function markdown(text) {
 }
 function activeConfig() { return state.config?.liveConfig ?? state.config?.mockConfig; }
 function history() {
-  $('#history-count').textContent = state.runs.length;
-  $('#history').innerHTML = state.runs.length ? state.runs.slice(0, 40).map(r => `<button class="history-item ${state.run?.id === r.id ? 'selected' : ''}" data-run="${escape(r.id)}"><div class="history-title">${escape(r.problem)}</div><div class="history-meta"><span class="status-${r.status}">● ${statusNames[r.status] || r.status}</span><span>${r.mode === 'mock' ? '模拟' : '真实'} · ${new Date(r.started_at).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })}</span></div></button>`).join('') : '<div class="small-note" style="padding:10px 12px">会议记录会保存在这里</div>';
+  const liveRuns = state.runs.filter(r => r.mode !== 'mock');
+  const mockRuns = state.runs.filter(r => r.mode === 'mock');
+
+  if ($('#live-count')) $('#live-count').textContent = liveRuns.length;
+  if ($('#mock-count')) $('#mock-count').textContent = mockRuns.length;
+  if ($('#all-count')) $('#all-count').textContent = state.runs.length;
+
+  const currentMode = state.historyMode || 'live';
+  const targetRuns = currentMode === 'live' ? liveRuns : (currentMode === 'mock' ? mockRuns : state.runs);
+
+  $('#history-count').textContent = targetRuns.length;
+  document.querySelectorAll('#history-mode-tabs .history-tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.mode === currentMode);
+  });
+
+  const emptyText = currentMode === 'live' ? '暂无真实会议记录' : (currentMode === 'mock' ? '暂无模拟记录' : '会议记录会保存在这里');
+  $('#history').innerHTML = targetRuns.length
+    ? targetRuns.slice(0, 40).map(r => `<button class="history-item ${state.run?.id === r.id ? 'selected' : ''}" data-run="${escape(r.id)}"><div class="history-title">${escape(r.problem)}</div><div class="history-meta"><span class="status-${r.status}">● ${statusNames[r.status] || r.status}</span><span>${r.mode === 'mock' ? '模拟' : '真实'} · ${new Date(r.started_at).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })}</span></div></button>`).join('')
+    : `<div class="small-note" style="padding:10px 12px">${emptyText}</div>`;
 }
 function heading(eyebrow, title, subtitle, right = '') { return `<div class="heading-row"><div><span class="eyebrow">${eyebrow}</span><h1>${title}</h1><p>${subtitle}</p></div>${right}</div>`; }
 function getNextSeatId(existingSeats) {
@@ -609,6 +626,10 @@ function renderRun() {
                   <span class="small-note" style="color:#4a6147;font-weight:600">采用机制：</span>
                   ${p.mechanisms.map(m => `<span class="chip" style="background:#eaf2e8;color:#2b5438;border:1px solid #d0e2ce;font-weight:600">⚙️ ${escape(m)}</span>`).join('')}
                 </div>` : ''}
+              ${row.summary ? `
+                <div class="ranking-summary">
+                  <strong style="color:#265c36">📌 核心速览（一句话）：</strong>${escape(row.summary)}
+                </div>` : ''}
               <div style="background:#f4f7f1;border-radius:6px;padding:9px 12px;margin-bottom:12px;font-size:12px;color:#455944">
                 <strong>💡 排序理由：</strong>${escape(row.reason)}
               </div>
@@ -660,9 +681,25 @@ function renderRun() {
   document.querySelectorAll('.thinking-stream').forEach(el => { el.scrollTop = el.scrollHeight; });
 }
 function renderCompare() {
+  const currentMode = state.compareMode || 'live';
+  const liveCount = state.runs.filter(r => r.mode !== 'mock').length;
+  const mockCount = state.runs.filter(r => r.mode === 'mock').length;
+  const filteredRuns = currentMode === 'live'
+    ? state.runs.filter(r => r.mode !== 'mock')
+    : currentMode === 'mock'
+      ? state.runs.filter(r => r.mode === 'mock')
+      : state.runs;
+
   $('#main').innerHTML = `${heading('COMPARE THE EVIDENCE', '同一个问题，不同的思考方式。', '比较实际用量与结果，再判断多轮协作是否值得。')}
   <div class="info-box">调用次数相同不代表 token 或费用相同。请比较同一问题、相同模型配置和多个种子的真实运行；模拟数据不能用于质量结论。导出答案后可隐藏实验名称交给独立评审。</div>
-  <section class="card table-wrap"><table><thead><tr><th>问题 / 运行</th><th>实验</th><th>模式 / 状态</th><th>调用</th><th>Tokens</th><th>耗时</th><th>排序覆盖 / 旧版采用</th></tr></thead><tbody>${state.runs.map(r => `<tr><td><button class="example-button compare-problem" data-run="${r.id}" title="${escape(r.problem)}">${escape(r.problem)}</button><div class="small-note">Seed ${r.seed}</div></td><td>${escape(state.config.experiments[r.experiment]?.name)}${!r.use_operators ? '<br><span class="small-note">无思维刺激</span>' : ''}</td><td>${r.mode === 'mock' ? '模拟' : '真实'} · ${statusNames[r.status]}</td><td>${r.metrics.attempted_calls}</td><td>${r.metrics.input_tokens == null ? '—' : number(r.metrics.input_tokens + r.metrics.output_tokens)}</td><td>${Math.round((r.metrics.duration_ms ?? 0) / 1000)}s</td><td>${r.workflow_version === 2 ? (r.experiment === 'direct' ? '不适用' : `${r.metrics.ranked_proposals} / ${r.metrics.proposal_count}`) : percent(r.metrics.late_round_value)}</td></tr>`).join('') || '<tr><td colspan="7">还没有会议记录。先新建一次会议。</td></tr>'}</tbody></table></section>`;
+  <div class="compare-filter-bar">
+    <div class="history-mode-tabs">
+      <button type="button" class="history-tab-btn ${currentMode === 'live' ? 'active' : ''}" data-compare-mode="live">真实运行 <span>${liveCount}</span></button>
+      <button type="button" class="history-tab-btn ${currentMode === 'mock' ? 'active' : ''}" data-compare-mode="mock">模拟记录 <span>${mockCount}</span></button>
+      <button type="button" class="history-tab-btn ${currentMode === 'all' ? 'active' : ''}" data-compare-mode="all">全部 <span>${state.runs.length}</span></button>
+    </div>
+  </div>
+  <section class="card table-wrap"><table><thead><tr><th>问题 / 运行</th><th>实验</th><th>模式 / 状态</th><th>调用</th><th>Tokens</th><th>耗时</th><th>排序覆盖 / 旧版采用</th></tr></thead><tbody>${filteredRuns.map(r => `<tr><td><button class="example-button compare-problem" data-run="${r.id}" title="${escape(r.problem)}">${escape(r.problem)}</button><div class="small-note">Seed ${r.seed}</div></td><td>${escape(state.config.experiments[r.experiment]?.name)}${!r.use_operators ? '<br><span class="small-note">无思维刺激</span>' : ''}</td><td>${r.mode === 'mock' ? '模拟' : '真实'} · ${statusNames[r.status]}</td><td>${r.metrics.attempted_calls}</td><td>${r.metrics.input_tokens == null ? '—' : number(r.metrics.input_tokens + r.metrics.output_tokens)}</td><td>${Math.round((r.metrics.duration_ms ?? 0) / 1000)}s</td><td>${r.workflow_version === 2 ? (r.experiment === 'direct' ? '不适用' : `${r.metrics.ranked_proposals} / ${r.metrics.proposal_count}`) : percent(r.metrics.late_round_value)}</td></tr>`).join('') || `<tr><td colspan="7">${currentMode === 'live' ? '暂无真实会议记录。' : currentMode === 'mock' ? '暂无模拟记录。' : '还没有会议记录。'}先新建一次会议。</td></tr>`}</tbody></table></section>`;
 }
 const MODEL_PRESETS = [
   {
@@ -1784,6 +1821,9 @@ async function openRun(id) {
   typingStreams.clear();
   try {
     state.run = await api(`/api/runs/${id}`);
+    if (state.run?.mode && state.historyMode !== 'all' && state.historyMode !== state.run.mode) {
+      state.historyMode = state.run.mode;
+    }
     state.page = 'workspace';
     state.round = null;
     state.filter = '';
@@ -1791,6 +1831,7 @@ async function openRun(id) {
     state.fingerprint = getStructuralFingerprint(state.run);
     location.hash = id;
     render();
+    history();
     if (state.run.status === 'running') connectEventSource(id);
     else disconnectEventSource();
   }
@@ -1805,6 +1846,17 @@ $('#close-help').addEventListener('click', () => $('#help-dialog').close());
 document.addEventListener('keydown', e => { if (e.key.toLowerCase() === 'n' && !e.ctrlKey && !e.metaKey && !e.altKey && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) && !$('#help-dialog').open) newRun(); });
 document.addEventListener('click', async e => {
   try {
+    const tabBtn = e.target.closest('.history-tab-btn');
+    if (tabBtn) {
+      if (tabBtn.dataset.mode) {
+        state.historyMode = tabBtn.dataset.mode;
+        history();
+      } else if (tabBtn.dataset.compareMode) {
+        state.compareMode = tabBtn.dataset.compareMode;
+        renderCompare();
+      }
+      return;
+    }
     const runButton = e.target.closest('[data-run]'); if (runButton) return await openRun(runButton.dataset.run);
     const proposal = e.target.closest('[data-proposal]');
     if (proposal) {

@@ -10,6 +10,11 @@
     <button class="nav-item" id="compare-nav"><span>▥</span> 实验对照</button>
     <button class="nav-item" id="config-nav"><span>⚙</span> 模型与规则</button>
     <div class="sidebar-label history-label">最近的会议 <span id="history-count">0</span></div>
+    <div class="history-mode-tabs" id="history-mode-tabs">
+      <button type="button" class="history-tab-btn active" data-mode="live">真实 <span id="live-count">0</span></button>
+      <button type="button" class="history-tab-btn" data-mode="mock">模拟 <span id="mock-count">0</span></button>
+      <button type="button" class="history-tab-btn" data-mode="all">全部 <span id="all-count">0</span></button>
+    </div>
     <div id="history" class="history"></div>
     <div class="sidebar-footer"><span class="online-dot"></span> 本地工作空间 <span>v0.1</span></div>
   </aside>

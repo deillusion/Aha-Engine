@@ -88,7 +88,7 @@ export async function mockCompletion(model, request, { signal, mockDelayMs = 180
   } else if (phase === 'decision') {
     value = { proposals: [completeProposal(c)] };
   } else if (phase === 'chair') {
-    value = { rankings: [...c.proposals].reverse().map(p => ({ proposal_id: p.proposal_id, reason: '固定模拟排序，仅验证全部方案均保留且正文不被改写。' })) };
+    value = { rankings: [...c.proposals].reverse().map(p => ({ proposal_id: p.proposal_id, summary: `采用【${(p.mechanisms || []).join(' + ') || '核心机制'}】，以极简规则打穿主要矛盾。`, reason: '固定模拟排序，仅验证全部方案均保留且正文不被改写。' })) };
   } else if (phase === 'direct') {
     value = { text: '## 固定模拟回答\n\n构建有限资源、两种行动、可见后果与下一轮调整组成的短循环。用小规模试验验证参与者能否解释取舍，再决定下一步。\n\n这是固定模拟数据，没有解答当前输入问题。' };
   } else if (phase === 'dealer') {

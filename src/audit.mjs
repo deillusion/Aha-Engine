@@ -31,7 +31,7 @@ export function auditRun(run) {
       checks.valid_final_output = run.final?.kind === 'direct' && passes(() => validateDirect({ text: run.final.text }));
       checks.direct_without_chair = !run.calls.some(c => c.phase === 'chair');
     } else {
-      const ranking = { rankings: run.final?.rankings?.map(({ proposal_id, reason }) => ({ proposal_id, reason })) };
+      const ranking = { rankings: run.final?.rankings?.map(({ proposal_id, summary, reason }) => ({ proposal_id, summary, reason })) };
       checks.complete_ranking = run.final?.kind === 'ranking' && passes(() => validateRanking(ranking, proposals));
       checks.original_proposals_preserved = checks.complete_ranking && run.final.rankings.every((r, i) => r.rank === i + 1) && run.final.text === rankedFinal(ranking, proposals).text;
     }

@@ -344,7 +344,8 @@ export async function executeRun(run, { store, signal, provider, mockDelayMs = 1
         if (chunk.type === 'thinking') run.chair_thinking = (run.chair_thinking || '') + chunk.text;
       };
       try {
-        const ranking = await invoke('chair', config.roles.chair, { round, proposals }, v => validateRanking(v, proposals), 'chair', onStreamChunk);
+        const board = run.snapshots.at(-1) || { points: [], rendered_text: '' };
+        const ranking = await invoke('chair', config.roles.chair, { round, proposals, board }, v => validateRanking(v, proposals), 'chair', onStreamChunk);
         run.final = rankedFinal(ranking, proposals);
       } catch (error) {
         abortCheck();
@@ -352,8 +353,9 @@ export async function executeRun(run, { store, signal, provider, mockDelayMs = 1
         // all of it away, so fall back to a declared neutral order instead of a ranked one.
         run.chair_degraded = error.message;
         await emit('排序降级', round, `Chair 排序校验失败，跳过模型排序并保留全部 ${proposals.length} 个方案：${error.message}`);
-        run.final = rankedFinal({ rankings: proposals.map(p => ({ proposal_id: p.proposal_id, reason: 'Chair 排序未通过校验，此处为保序占位，不代表模型名次。' })) }, proposals);
-        run.final.degraded = true;      }
+        run.final = rankedFinal({ rankings: proposals.map(p => ({ proposal_id: p.proposal_id, summary: p.title || '无一句话概括（保序占位）', reason: 'Chair 排序未通过校验，此处为保序占位，不代表模型名次。' })) }, proposals);
+        run.final.degraded = true;
+      }
     }
     abortCheck(); run.status = 'completed'; run.phase = '已完成';
   } catch (error) {

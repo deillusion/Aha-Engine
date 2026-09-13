@@ -29,7 +29,8 @@
       "outputPricePerMillion": null,
       "protocol": "chat",
       "reasoningEffortMap": {
-        "medium": "high"
+        "medium": "high",
+        "none": "low"
       }
     },
     {
@@ -95,7 +96,8 @@
     },
     "dedup": {
       "temperature": 0.1,
-      "reasoning_effort": "low",
+      "reasoning_effort": "none",
+      "thinking": "disabled",
       "max_output_tokens": 131072
     },
     "decision": {

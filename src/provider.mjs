@@ -6,7 +6,13 @@ export function buildPayload(model, request) {
   if (model.protocol === 'gemini') {
     const generationConfig = { maxOutputTokens: effectiveOutputLimit };
     if (model.supportsTemperature) generationConfig.temperature = request.generation.temperature;
-    if (model.supportsReasoning) generationConfig.thinkingConfig = { thinkingLevel: request.generation.reasoning_effort.toUpperCase() };
+    if (model.supportsReasoning) {
+      if (request.generation.reasoning_effort === 'none' || request.generation.thinking === 'disabled') {
+        generationConfig.thinkingConfig = { thinkingBudget: 0 };
+      } else {
+        generationConfig.thinkingConfig = { thinkingLevel: request.generation.reasoning_effort.toUpperCase() };
+      }
+    }
     if (schemas[request.phase]) { generationConfig.responseMimeType = 'application/json'; generationConfig.responseJsonSchema = schemas[request.phase]; }
     return { systemInstruction: { parts: request.messages.filter(m => m.role === 'system').map(m => ({ text: m.content })) }, contents: request.messages.filter(m => m.role !== 'system').map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })), generationConfig };
   }
@@ -14,7 +20,13 @@ export function buildPayload(model, request) {
   if (model.supportsTemperature) payload.temperature = request.generation.temperature;
   if (model.supportsReasoning) payload.reasoning_effort = model.reasoningEffortMap?.[request.generation.reasoning_effort] ?? request.generation.reasoning_effort;
   if (model.supportsSeed) payload.seed = request.seed;
-  if (model.thinking) payload.thinking = { type: model.thinking };
+  const thinking = request.generation?.thinking ?? model.thinking;
+  if (thinking) {
+    const supportsThinkingParam = model.supportsThinking || model.thinking !== undefined || model.id === 'DEEPSEEK' || /deepseek/i.test(model.model ?? '');
+    if (supportsThinkingParam) {
+      payload.thinking = { type: thinking };
+    }
+  }
   const schema = schemas[request.phase];
   if (schema) {
     if (model.structuredOutput === 'json_schema') payload.response_format = { type: 'json_schema', json_schema: { name: request.phase, strict: true, schema } };

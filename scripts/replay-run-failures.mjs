@@ -3,10 +3,25 @@
 // an echoed "type" key reached a missing schema node and crashed the validator instead of being reported.
 // Usage: node scripts/replay-run-failures.mjs [data/runs/<run-id>.json]
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { validatePlan, salvagePlan } from '../src/board.mjs';
 import { validateCreative, canonicalContributionType } from '../src/schema.mjs';
 
-const file = process.argv[2] ?? 'data/runs/run-1789079578302-da7edfdd.json';
+let file = process.argv[2];
+if (!file) {
+  if (existsSync('data/runs/live/run-1789079578302-da7edfdd.json')) {
+    file = 'data/runs/live/run-1789079578302-da7edfdd.json';
+  } else if (existsSync('data/runs/mock/run-1789079578302-da7edfdd.json')) {
+    file = 'data/runs/mock/run-1789079578302-da7edfdd.json';
+  } else {
+    file = 'data/runs/run-1789079578302-da7edfdd.json';
+  }
+} else if (!existsSync(file)) {
+  const id = path.basename(file, '.json');
+  if (existsSync(path.join('data/runs/live', `${id}.json`))) file = path.join('data/runs/live', `${id}.json`);
+  else if (existsSync(path.join('data/runs/mock', `${id}.json`))) file = path.join('data/runs/mock', `${id}.json`);
+}
 const run = JSON.parse(await readFile(file, 'utf8'));
 const snapshots = new Map(run.snapshots.map(s => [s.version, s]));
 const failed = run.calls.filter(c => c.status === 'failed');

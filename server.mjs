@@ -238,7 +238,19 @@ export async function createApp({ dataDir = path.join(root, 'data/runs'), mockDe
           });
         }
       }
-      if (route === '/api/runs' && req.method === 'GET') return json(200, { runs: await store.list(), activeId: active?.run.id ?? null });
+      if (route === '/api/runs' && req.method === 'GET') {
+        const reqMode = url.searchParams.get('mode');
+        const allRuns = await store.list();
+        const liveCount = allRuns.filter(r => r.mode !== 'mock').length;
+        const mockCount = allRuns.filter(r => r.mode === 'mock').length;
+        const runs = (reqMode && reqMode !== 'all') ? allRuns.filter(r => r.mode === reqMode) : allRuns;
+        return json(200, {
+          runs,
+          total: allRuns.length,
+          counts: { live: liveCount, mock: mockCount },
+          activeId: active?.run.id ?? null
+        });
+      }
       if (route === '/api/runs' && req.method === 'POST') {
         if (active) return json(409, { error: '已有会议运行中，请等待完成或停止当前会议' });
         // Reserve before the first await so simultaneous requests cannot launch two runs.

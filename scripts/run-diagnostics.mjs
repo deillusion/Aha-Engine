@@ -8,7 +8,7 @@
 //   node scripts/run-diagnostics.mjs --out data/diagnostics/xxx.md   # 同时把 Markdown 报告写到文件
 //
 // 只读 data/runs，不发起模型请求，不修改任何运行记录。
-import { readdirSync, readFileSync, statSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -41,9 +41,20 @@ function parseArgs(argv) {
 }
 
 function loadRuns(options) {
-  const files = readdirSync(runsDir)
-    .filter(name => /^run-.+\.json$/.test(name))
-    .map(name => ({ name, full: path.join(runsDir, name) }))
+  const dirs = [path.join(runsDir, 'live'), path.join(runsDir, 'mock'), runsDir];
+  const seen = new Set();
+  const rawFiles = [];
+  for (const d of dirs) {
+    try {
+      for (const name of readdirSync(d)) {
+        if (/^run-.+\.json$/.test(name) && !seen.has(name)) {
+          seen.add(name);
+          rawFiles.push({ name, full: path.join(d, name) });
+        }
+      }
+    } catch {}
+  }
+  const files = rawFiles
     .map(file => {
       let run = null;
       try { run = JSON.parse(readFileSync(file.full, 'utf8')); } catch { /* 半截写入或非运行记录 */ }
@@ -51,11 +62,14 @@ function loadRuns(options) {
     })
     .filter(file => file.run && Array.isArray(file.run.calls))
     .sort((a, b) => b.order - a.order);
+  const filtered = options.live
+    ? files.filter(f => f.run?.mode === 'live')
+    : files;
   const wanted = options.ids.length
-    ? files.filter(f => options.ids.some(id => f.name === `${id}.json` || f.name.startsWith(id)))
+    ? filtered.filter(f => options.ids.some(id => f.name === `${id}.json` || f.name.startsWith(id)))
     : options.all
-      ? files
-      : files.slice(0, options.last > 1 ? options.last : 1);
+      ? filtered
+      : filtered.slice(0, options.last > 1 ? options.last : 1);
   if (!wanted.length) throw new Error(`data/runs 里没有匹配的运行记录：${options.ids.join(', ') || '(空)'}`);
   const missing = options.ids.filter(id => !wanted.some(f => f.name === `${id}.json` || f.name.startsWith(id)));
   if (missing.length) throw new Error(`找不到运行记录：${missing.join(', ')}`);
@@ -117,7 +131,7 @@ function groupTable(title, groups, labelOf) {
   return lines.join('\n');
 }
 
-function reportOne({ name, run }) {
+function reportOne({ name, full, run }) {
   const rows = (run.calls ?? []).map(callRow);
   const out = [];
   const wall = run.started_at && run.completed_at ? Date.parse(run.completed_at) - Date.parse(run.started_at) : null;
@@ -125,7 +139,9 @@ function reportOne({ name, run }) {
   const status = dangling ? `${run.status}（有 ${dangling} 次调用未收尾）` : run.status;
   out.push(`## ${run.id}`);
   out.push('');
-  out.push(`- 文件：\`data/runs/${name}\`（${(statSync(path.join(runsDir, name)).size / 1048576).toFixed(2)} MB）`);
+  const relPath = full ? path.relative(root, full).replace(/\\/g, '/') : `data/runs/${name}`;
+  const fileSize = full && existsSync(full) ? (statSync(full).size / 1048576).toFixed(2) : '—';
+  out.push(`- 文件：\`${relPath}\`（${fileSize} MB）`);
   out.push(`- 模式：${run.mode === 'mock' ? '模拟' : '真实'} · 实验：${run.experiment} · 思维刺激：${run.use_operators ? '开' : '关'} · 种子：${run.seed}`);
   out.push(`- 状态：${status} · 开始：${run.started_at ?? '—'} · 结束：${run.completed_at ?? '—'}`);
   out.push(`- 墙钟耗时：${formatMs(wall)} · 调用尝试：${rows.length}（预期 ${run.metrics?.expected_calls ?? '—'}）`);

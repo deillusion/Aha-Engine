@@ -33,7 +33,7 @@ export function rankedFinal(result, proposals) {
   // Text is assembled locally from the stored originals, never authored by Chair.
   const text = '# 候选方案排序\n\n所有候选方案及其修订版本均保留。名次仅为模型排序，最终选择由你决定。\n\n' + rankings.map(r => {
     const p = byId.get(r.proposal_id);
-    return `# 第 ${r.rank} 名 · ${p.title.replace(/[\r\n]+/g, ' ')}\n\n排序理由：${r.reason}\n\n${proposalText(p)}`;
+    return `# 第 ${r.rank} 名 · ${p.title.replace(/[\r\n]+/g, ' ')}\n\n> **核心速览（一句话）**：${r.summary}\n\n**排序理由**：${r.reason}\n\n${proposalText(p)}`;
   }).join('\n\n---\n\n');
   return { kind: 'ranking', rankings, text };
 }
