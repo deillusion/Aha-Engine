@@ -1,14 +1,73 @@
-import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { randomUUID } from 'node:crypto';
+
+function withoutInlineCredentials(run) {
+  const safe = structuredClone(run);
+  for (const model of (safe.config?.models ?? [])) delete model.apiKey;
+  return safe;
+}
 
 export class Store {
   constructor(dir) {
     this.dir = dir;
     this.liveDir = path.join(dir, 'live');
     this.mockDir = path.join(dir, 'mock');
+    this.leaseFile = path.join(dir, '.active-run.lock');
     this.queues = new Map();
+  }
+
+  async readActiveLease() {
+    let lease;
+    try { lease = JSON.parse(await readFile(this.leaseFile, 'utf8')); }
+    catch (error) {
+      if (error.code === 'ENOENT') return null;
+      // Another process may have created the file and still be writing its small payload.
+      // Treat malformed/partial content as active rather than risking a double launch.
+      return { invalid: true };
+    }
+    if (!Number.isInteger(lease.pid) || lease.pid <= 0) {
+      return { invalid: true };
+    }
+    try {
+      process.kill(lease.pid, 0);
+      return lease;
+    } catch (error) {
+      if (error.code === 'EPERM') return lease;
+      await unlink(this.leaseFile).catch(() => {});
+      return null;
+    }
+  }
+
+  async hasActiveRunLease() { return !!(await this.readActiveLease()); }
+
+  async acquireRunLease(runId) {
+    const token = randomUUID();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let handle;
+      try {
+        handle = await open(this.leaseFile, 'wx');
+        await handle.writeFile(JSON.stringify({ token, runId, pid: process.pid, startedAt: new Date().toISOString() }), 'utf8');
+        await handle.close();
+        return async () => {
+          const current = await this.readActiveLease();
+          if (current?.token === token) await unlink(this.leaseFile).catch(error => { if (error.code !== 'ENOENT') throw error; });
+        };
+      } catch (error) {
+        await handle?.close().catch(() => {});
+        if (error.code !== 'EEXIST') throw error;
+        if (await this.readActiveLease()) {
+          const conflict = new Error('已有会议在另一个 Aha 入口中运行');
+          conflict.code = 'RUN_LEASED';
+          throw conflict;
+        }
+      }
+    }
+    const conflict = new Error('无法取得运行租约');
+    conflict.code = 'RUN_LEASED';
+    throw conflict;
   }
 
   async init() {
@@ -62,7 +121,8 @@ export class Store {
   async save(run) {
     const targetMode = run.mode === 'mock' ? 'mock' : 'live';
     const file = this.file(run.id, targetMode);
-    const text = JSON.stringify(run);
+    // Repository boundary defense: even legacy or third-party callers cannot persist inline keys.
+    const text = JSON.stringify(withoutInlineCredentials(run));
     const job = (this.queues.get(run.id) ?? Promise.resolve()).then(async () => {
       await writeFile(`${file}.tmp`, text, 'utf8');
       for (let attempt = 0; ; attempt++) {
@@ -78,7 +138,7 @@ export class Store {
     const file = this.file(id);
     // Windows can reject replacement while readFile has the destination open.
     // Serialize reads with writes as well as writes with each other.
-    const job = (this.queues.get(id) ?? Promise.resolve()).then(async () => JSON.parse(await readFile(file, 'utf8')));
+    const job = (this.queues.get(id) ?? Promise.resolve()).then(async () => withoutInlineCredentials(JSON.parse(await readFile(file, 'utf8'))));
     this.queues.set(id, job.then(() => {}, () => {}));
     return job;
   }

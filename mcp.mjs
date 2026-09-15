@@ -1,9 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline';
-import { loadConfig } from './src/config.mjs';
-import { Store } from './src/store.mjs';
-import { createRun, executeRun } from './src/engine.mjs';
+import { RunService, RunConflictError } from './src/application/run_service.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 
@@ -13,6 +11,7 @@ if (typeof process.loadEnvFile === 'function') {
 }
 
 const MCP_PROTOCOL_VERSION = '2024-11-05';
+let runService = null;
 
 function log(msg) {
   process.stderr.write(`[Aha-MCP] ${new Date().toISOString()} ${msg}\n`);
@@ -142,16 +141,6 @@ async function handleToolCall(id, name, args) {
 
   const cleanConstraints = constraints.map(c => String(c).trim()).filter(Boolean);
 
-  let config;
-  try {
-    config = await loadConfig(root, mode);
-  } catch (err) {
-    return sendError(id, -32603, `加载 Aha 配置失败：${err.message}`);
-  }
-
-  const store = new Store(path.join(root, 'data/runs'));
-  await store.init();
-
   const runInput = {
     problem: enrichedProblem,
     constraints: cleanConstraints,
@@ -161,11 +150,6 @@ async function handleToolCall(id, name, args) {
     use_operators: true,
     use_domain_operators: use_domain_operators === true
   };
-
-  const run = createRun(runInput, config);
-  await store.save(run);
-
-  log(`Run started: ${run.id} (${run.mode}, ${run.experiment}${run.routing?.isAdaptive ? `, adaptive: ${run.routing.activeModels.join('+')}` : ''})`);
 
   // Progress emitter
   const onEvent = ({ phase, round, message }) => {
@@ -177,7 +161,10 @@ async function handleToolCall(id, name, args) {
   };
 
   try {
-    await executeRun(run, { store, onEvent, mockDelayMs: 20 });
+    const started = await runService.startRun(runInput, { onEvent, mockDelayMs: 20 });
+    const { run } = started;
+    log(`Run started: ${run.id} (${run.mode}, ${run.experiment}${run.routing?.isAdaptive ? `, adaptive: ${run.routing.activeModels.join('+')}` : ''})`);
+    await started.completion;
     
     if (run.status !== 'completed') {
       return sendResponse(id, {
@@ -206,7 +193,7 @@ async function handleToolCall(id, name, args) {
     });
   } catch (err) {
     log(`Run error: ${err.message}`);
-    sendError(id, -32603, `执行 Aha 会议失败：${err.message}`);
+    sendError(id, err instanceof RunConflictError ? -32000 : -32603, `执行 Aha 会议失败：${err.message}`);
   }
 }
 
@@ -275,12 +262,15 @@ function handleMessage(msg) {
   }
 }
 
-export function startMcpServer() {
+export async function startMcpServer() {
+  runService = new RunService({ root, mockDelayMs: 20 });
+  await runService.init();
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
     terminal: false
   });
+  rl.on('close', () => { void runService.stop(); });
 
   rl.on('line', line => {
     const trimmed = line.trim();
@@ -298,5 +288,5 @@ export function startMcpServer() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  startMcpServer();
+  await startMcpServer();
 }

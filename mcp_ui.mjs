@@ -1,13 +1,8 @@
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EventEmitter } from 'node:events';
-import { loadConfig, saveConfig, getModelApiKey, resolveActiveConfig } from './src/config.mjs';
-import { Store, summary } from './src/store.mjs';
-import { createRun, executeRun, EXPERIMENTS } from './src/engine.mjs';
-import { chatCompletion } from './src/provider.mjs';
-import { operators } from './src/operators.mjs';
-import { domainCatalog } from './src/domain_operators.mjs';
+import { RunService, RunConflictError } from './src/application/run_service.mjs';
+import { ConfigService } from './src/application/config_service.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 
@@ -19,13 +14,10 @@ if (typeof process.loadEnvFile === 'function') {
 const MCP_PATH = path.resolve(root, 'mcp.mjs');
 
 export async function createMcpApp({ dataDir = path.join(root, 'data/runs') } = {}) {
-  const store = new Store(dataDir);
-  await store.init();
-  await store.recover();
-
-  const streamEvents = new EventEmitter();
-  streamEvents.setMaxListeners(64);
-  let active = null;
+  const runService = new RunService({ root, dataDir, mockDelayMs: 20 });
+  await runService.init();
+  const configService = new ConfigService({ root });
+  const store = runService.store;
 
   async function body(req) {
     const chunks = [];
@@ -58,60 +50,13 @@ export async function createMcpApp({ dataDir = path.join(root, 'data/runs') } = 
 
       // API: Config
       if (route === '/api/config' && req.method === 'GET') {
-        let liveConfig = null, liveError = null, routingPreview = null;
-        try {
-          liveConfig = await loadConfig(root, 'live', { allowKeyless: true });
-          try {
-            const resolved = resolveActiveConfig(liveConfig, 'live');
-            routingPreview = resolved.routing;
-          } catch {
-            const activeModels = liveConfig.models.filter(m => isModelAvailable(m, 'live'));
-            routingPreview = {
-              totalModels: liveConfig.models.length,
-              activeModels: activeModels.map(m => m.id),
-              inactiveModels: liveConfig.models.filter(m => !activeModels.includes(m.id)).map(m => m.id),
-              seatDistribution: {},
-              remappedSeats: [],
-              remappedRoles: {},
-              isAdaptive: false
-            };
-          }
-        } catch (e) {
-          liveError = e.message;
-        }
-        const sanitizeConfig = cfg => {
-          if (!cfg) return null;
-          const cloned = structuredClone(cfg);
-          cloned.models = cloned.models.map(m => {
-            const rawKey = getModelApiKey(m);
-            const hasKey = rawKey !== null;
-            let maskedKey = '';
-            if (rawKey) {
-              maskedKey = rawKey.length > 8 ? `${rawKey.slice(0, 4)}••••${rawKey.slice(-4)}` : '••••••••';
-            }
-            const keySource = m.apiKey ? 'config' : (m.apiKeyEnv && process.env[m.apiKeyEnv] ? 'env' : 'none');
-            const { apiKey, ...rest } = m;
-            return { ...rest, hasKey, maskedKey, keySource };
-          });
-          return cloned;
-        };
-        return json(200, {
-          mockConfig: await loadConfig(root, 'mock'),
-          liveConfig: sanitizeConfig(liveConfig),
-          rawConfigPresent: !!liveConfig,
-          liveError,
-          routingPreview,
-          experiments: EXPERIMENTS,
-          operators,
-          domainCatalog,
-          mcpPath: MCP_PATH
-        });
+        return json(200, await configService.overview({ mcpPath: MCP_PATH }));
       }
 
       if (route === '/api/config' && req.method === 'POST') {
         const newConfig = await body(req);
         try {
-          await saveConfig(root, newConfig);
+          await configService.save(newConfig);
           return json(200, { ok: true, message: 'MCP 席位与模型 API Key 配置已保存并实时生效' });
         } catch (e) {
           return json(400, { error: e.message });
@@ -120,36 +65,16 @@ export async function createMcpApp({ dataDir = path.join(root, 'data/runs') } = 
 
       // API: Model connectivity test
       if (route === '/api/models/test' && req.method === 'POST') {
-        const { modelId, apiKey } = await body(req);
-        let liveConfig;
-        try { liveConfig = await loadConfig(root, 'live', { allowKeyless: true }); } catch (e) { return json(400, { error: e.message }); }
-        const model = liveConfig.models.find(m => m.id === modelId);
-        if (!model) return json(404, { error: `未找到模型配置: ${modelId}` });
-        const testModel = structuredClone(model);
-        if (typeof apiKey === 'string' && apiKey.trim() && !apiKey.includes('•••')) {
-          testModel.apiKey = apiKey.trim();
-        }
-        const key = getModelApiKey(testModel);
-        if (!key && testModel.apiKeyEnv !== null) {
-          return json(200, { ok: false, error: '未检测到 API Key，请先填入 Key' });
-        }
-        const start = Date.now();
         try {
-          const result = await chatCompletion(testModel, {
-            phase: 'direct',
-            messages: [{ role: 'user', content: '严格返回 JSON: {"text":"ok"}' }],
-            generation: { max_output_tokens: 64, temperature: 0.1, reasoning_effort: 'low' },
-            seed: 1
-          }, { timeoutMs: 15000 });
-          return json(200, { ok: true, latencyMs: Date.now() - start, model: testModel.model, response: result.text });
-        } catch (err) {
-          return json(200, { ok: false, latencyMs: Date.now() - start, model: testModel.model, error: err.message });
+          return json(200, await configService.testModel(await body(req)));
+        } catch (e) {
+          return json(e.code === 'MODEL_NOT_FOUND' ? 404 : 400, { error: e.message });
         }
       }
 
       if (route === '/api/runs' && req.method === 'GET') {
         const reqMode = url.searchParams.get('mode');
-        const allRuns = await store.list();
+        const allRuns = await runService.list();
         const liveCount = allRuns.filter(r => r.mode !== 'mock').length;
         const mockCount = allRuns.filter(r => r.mode === 'mock').length;
         const runs = (reqMode && reqMode !== 'all') ? allRuns.filter(r => r.mode === reqMode) : allRuns;
@@ -157,18 +82,15 @@ export async function createMcpApp({ dataDir = path.join(root, 'data/runs') } = 
           runs,
           total: allRuns.length,
           counts: { live: liveCount, mock: mockCount },
-          activeId: active?.run?.id ?? null
+          activeId: runService.activeRunId
         });
       }
 
       // API: Simulate / Trigger MCP run
       if (route === '/api/simulate' && req.method === 'POST') {
-        if (active) return json(409, { error: '已有设计会议运行中，请等待完成' });
-        active = { run: { id: null }, controller: new AbortController(), promise: null };
         try {
           const input = await body(req);
-          const config = await loadConfig(root, input.mode || 'mock');
-          const run = createRun({
+          const { run } = await runService.startRun({
             problem: input.problem,
             constraints: input.constraints || [],
             seed: input.seed ?? Math.floor(Math.random() * 1000000),
@@ -176,27 +98,10 @@ export async function createMcpApp({ dataDir = path.join(root, 'data/runs') } = 
             experiment: input.experiment || 'single',
             use_operators: input.use_operators !== false,
             use_domain_operators: input.use_domain_operators === true
-          }, config);
-
-          active.run = run;
-          await store.save(run);
-          const controller = active.controller;
-
-          active.promise = executeRun(run, {
-            store,
-            signal: controller.signal,
-            mockDelayMs: 20,
-            onEvent: data => streamEvents.emit(run.id, data)
-          }).catch(async e => {
-            run.status = 'failed';
-            run.error = `执行失败：${e.message}`;
-            run.completed_at = new Date().toISOString();
-            await store.save(run).catch(() => {});
-          }).finally(() => { active = null; });
-
-          return json(202, summary(run));
+          });
+          return json(202, runService.summarize(run));
         } catch (e) {
-          active = null;
+          if (e instanceof RunConflictError) return json(409, { error: e.message });
           throw e;
         }
       }
@@ -214,12 +119,12 @@ export async function createMcpApp({ dataDir = path.join(root, 'data/runs') } = 
           const send = data => {
             try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch {}
           };
-          streamEvents.on(id, send);
-          req.on('close', () => streamEvents.off(id, send));
+          const unsubscribe = runService.subscribe(id, send);
+          req.on('close', unsubscribe);
           return;
         }
         if (req.method === 'GET') {
-          const run = await store.get(id);
+          const run = await runService.get(id);
           if (action === 'answer') {
             res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' });
             return res.end(run.final?.text || '');
@@ -243,7 +148,7 @@ export async function createMcpApp({ dataDir = path.join(root, 'data/runs') } = 
     }
   });
 
-  return { server, store, stop: async () => { active?.controller.abort(); await active?.promise; } };
+  return { server, store, runService, stop: () => runService.stop() };
 }
 
 function renderMcpUiHtml() {

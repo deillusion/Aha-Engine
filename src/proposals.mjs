@@ -20,20 +20,36 @@ export function proposalContext(proposals) {
   }));
 }
 
-export function proposalText(p) {
-  const title = String(p.title ?? '').replace(/[\r\n]+/g, ' ');
-  const mechs = Array.isArray(p.mechanisms) && p.mechanisms.length ? `\n\n采用机制：${p.mechanisms.join(' + ')}` : '';
-  return `## ${title}\n\n方案 ID：${p.proposal_id}${mechs}\n\n来源方案：${p.parent_proposal_ids.join('、') || '新方案'}\n\n变更说明：${p.change_summary ?? ''}\n\n${p.text}`;
-}
-
-export function rankedFinal(result, proposals) {
+export function rankedResult(result, proposals) {
   validateRanking(result, proposals);
   const byId = new Map(proposals.map(p => [p.proposal_id, p]));
-  const rankings = result.rankings.map((r, index) => ({ ...r, rank: index + 1 }));
-  // Text is assembled locally from the stored originals, never authored by Chair.
-  const text = '# 候选方案排序\n\n所有候选方案及其修订版本均保留。名次仅为模型排序，最终选择由你决定。\n\n' + rankings.map(r => {
-    const p = byId.get(r.proposal_id);
-    return `# 第 ${r.rank} 名 · ${p.title.replace(/[\r\n]+/g, ' ')}\n\n> **核心速览（一句话）**：${r.summary}\n\n**排序理由**：${r.reason}\n\n${proposalText(p)}`;
-  }).join('\n\n---\n\n');
-  return { kind: 'ranking', rankings, text };
+  const seen = new Set();
+  const validRanked = [];
+  for (const r of (result.rankings || [])) {
+    if (byId.has(r.proposal_id) && !seen.has(r.proposal_id)) {
+      seen.add(r.proposal_id);
+      validRanked.push({
+        proposal_id: r.proposal_id,
+        summary: String(r.summary ?? '').trim() || (byId.get(r.proposal_id)?.title ? `【核心机制】${byId.get(r.proposal_id).title}` : '无一句话概括'),
+        reason: String(r.reason ?? '').trim() || 'Chair 未提供理由'
+      });
+    }
+  }
+  const unranked = proposals.filter(p => !seen.has(p.proposal_id)).map(p => ({
+    proposal_id: p.proposal_id,
+    summary: p.title ? `【未排序】${p.title.replace(/[\r\n]+/g, ' ')}` : '无一句话概括（未被Chair排序覆盖）',
+    reason: 'Chair 排序未覆盖此方案（原方案正文完整保留）',
+    rank: null,
+    unranked: true
+  }));
+  const ranked = validRanked.map((r, index) => ({ ...r, rank: index + 1, unranked: false }));
+  const rankings = ranked.length <= 10
+    ? [...ranked, ...unranked]
+    : [...ranked.slice(0, 10), ...unranked, ...ranked.slice(10)];
+  return {
+    kind: 'ranking',
+    rankings,
+    unranked_count: unranked.length,
+    chair_rankings: validRanked.map(r => ({ proposal_id: r.proposal_id, summary: r.summary, reason: r.reason }))
+  };
 }

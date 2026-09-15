@@ -148,18 +148,25 @@ export function validateMemo(data, board, available, maxMechanisms = 3) {
   assert(data.proposals.length > 0, '第六轮至少需要一个完整候选方案');
   for (const p of data.proposals) validateProposal(p, board, available, maxMechanisms);
 }
-export function validateRanking(data, proposals) {
+export function validateRanking(data, proposals, { strict = false } = {}) {
   validateSchema(data, schemas.chair);
   assert(proposals.length > 0, '没有可排序的方案');
-  const ids = new Set(proposals.map(p => p.proposal_id)), seen = new Set();
+  assert(Array.isArray(data.rankings) && data.rankings.length > 0, '排序列表不能为空');
   for (const row of data.rankings) {
-    assert(ids.has(row.proposal_id), '排序引用了不存在的方案');
-    assert(!seen.has(row.proposal_id), '方案排序重复');
     assert(row.summary && row.summary.trim(), '方案一句话总结不能为空');
-    assert(row.reason.trim(), '排序理由不能为空');
-    seen.add(row.proposal_id);
+    assert(row.reason && row.reason.trim(), '排序理由不能为空');
   }
-  assert(seen.size === ids.size, '排序必须覆盖全部候选方案');
+  const ids = new Set(proposals.map(p => p.proposal_id));
+  assert(data.rankings.some(row => ids.has(row.proposal_id)), '排序必须包含至少一个有效候选方案');
+  if (strict) {
+    const seen = new Set();
+    for (const row of data.rankings) {
+      assert(ids.has(row.proposal_id), '排序引用了不存在的方案');
+      assert(!seen.has(row.proposal_id), '方案排序重复');
+      seen.add(row.proposal_id);
+    }
+    assert(seen.size === ids.size, '排序必须覆盖全部候选方案');
+  }
 }
 export function validateDirect(data) {
   validateSchema(data, schemas.direct);

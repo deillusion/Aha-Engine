@@ -265,8 +265,10 @@ data/runs/<run-id>.json
 server.mjs          Web 服务、运行启动与取消
 cli.mjs             命令行入口
 mcp.mjs             stdio MCP Server
-mcp_ui.mjs          MCP 独立配置与调试界面
-src/engine.mjs      会议流程、调用审计与指标
+mcp_ui.mjs          MCP 配置与调试所用的管理 Web 适配器
+src/engine.mjs      不依赖传输、存储和模型厂商的会议流程内核
+src/application/    运行生命周期、模型执行、配置与指标等应用服务
+src/presenters/     Markdown 等交付格式
 src/board.mjs       观点分组、去重校验与原子更新
 src/proposals.mjs   候选方向及其派生关系
 src/schema.mjs      结构化输出与业务校验
@@ -279,6 +281,8 @@ public/             Web 工作台
 scripts/            模型检查、审计与诊断脚本
 tests/              离线自动化测试
 ```
+
+详细的分层定义、依赖方向和凭证边界见 [`ARCHITECTURE.md`](ARCHITECTURE.md)。Web、CLI 与 MCP 都通过同一个 `RunService` 发起和管理运行；MCP 只负责工具协议与调用端输入约束，不再自行实现会议生命周期。
 
 ## 当前边界
 

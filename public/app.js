@@ -608,16 +608,39 @@ function renderRun() {
     } else if (r.final) {
       if (r.final.kind === 'ranking') {
         html += `<div class="ranking-list">`;
+        let shownUnrankedHeader = false;
+        let shownPostUnrankedHeader = false;
         for (const row of r.final.rankings) {
           const p = byProposalId.get(row.proposal_id);
           const isTop = row.rank === 1;
+          const isUnranked = row.unranked || row.rank == null;
+
+          if (isUnranked && !shownUnrankedHeader) {
+            shownUnrankedHeader = true;
+            html += `
+              <div style="margin:20px 0 12px;padding:12px 16px;background:#fdf9f0;border-left:4px solid #d4a34b;border-radius:6px;color:#6b531e;font-size:13px;line-height:1.6">
+                <strong>⚠️ 未排方案（共 ${escape(r.final.unranked_count || '若干')} 个）</strong>：Chair 模型在排序时未覆盖以下方案。为防止遗漏潜在优秀方案，此处特在看完前十后展示，供重点考察（名次不作设定，原方案正文完整保留）。
+              </div>
+            `;
+          } else if (!isUnranked && shownUnrankedHeader && !shownPostUnrankedHeader) {
+            shownPostUnrankedHeader = true;
+            html += `
+              <div style="margin:20px 0 12px;padding:12px 16px;background:#f2f5f1;border-left:4px solid #5b7c5b;border-radius:6px;color:#354d35;font-size:13px;line-height:1.6">
+                <strong>📋 后续候选方案（第 11 名起）</strong>：以下继续展示 Chair 排序的其余方案版本。
+              </div>
+            `;
+          }
+
           html += `
-            <div class="ranking-card ${isTop ? 'rank-1' : ''}" id="rank-${escape(row.proposal_id)}">
+            <div class="ranking-card ${isTop ? 'rank-1' : ''} ${isUnranked ? 'rank-unranked' : ''}" id="rank-${escape(row.proposal_id)}" ${isUnranked ? 'style="border-color:#e4cf9e;background:#fffdfa"' : ''}>
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
                 <div style="display:flex;align-items:center;gap:10px">
-                  <span class="rank-badge ${isTop ? 'rank-top' : ''}">第 ${row.rank} 名</span>
+                  ${isUnranked
+                    ? `<span class="rank-badge" style="background:#8a9985;color:#fff;font-weight:600">未排</span>`
+                    : `<span class="rank-badge ${isTop ? 'rank-top' : ''}">第 ${row.rank} 名</span>`}
                   <strong style="font-size:15px;color:#274332">${escape(p?.title || row.proposal_id)}</strong>
                   <span class="chip">${escape(row.proposal_id)}</span>
+                  ${isUnranked ? `<span class="chip" style="background:#fff3cd;color:#856404;border-color:#ffeeba;font-size:11px">Chair未排序覆盖</span>` : ''}
                 </div>
                 ${p ? `<span class="small-note">席位 ${escape(p.seat_id)} · R${p.round}</span>` : ''}
               </div>
