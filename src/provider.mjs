@@ -2,6 +2,7 @@ import { schemas } from './schema.mjs';
 import { postJSON } from './transport.mjs';
 import { getModelApiKey } from './config.mjs';
 export function buildPayload(model, request) {
+  const responseSchema = request.schema ?? schemas[request.phase];
   const effectiveOutputLimit = Math.min(request.generation.max_output_tokens, model.maxOutputTokens ?? Infinity);
   if (model.protocol === 'gemini') {
     const generationConfig = { maxOutputTokens: effectiveOutputLimit };
@@ -13,7 +14,7 @@ export function buildPayload(model, request) {
         generationConfig.thinkingConfig = { thinkingLevel: request.generation.reasoning_effort.toUpperCase() };
       }
     }
-    if (schemas[request.phase]) { generationConfig.responseMimeType = 'application/json'; generationConfig.responseJsonSchema = schemas[request.phase]; }
+    if (responseSchema) { generationConfig.responseMimeType = 'application/json'; generationConfig.responseJsonSchema = responseSchema; }
     return { systemInstruction: { parts: request.messages.filter(m => m.role === 'system').map(m => ({ text: m.content })) }, contents: request.messages.filter(m => m.role !== 'system').map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })), generationConfig };
   }
   const payload = { model: model.model, messages: structuredClone(request.messages), [model.tokenParameter]: effectiveOutputLimit };
@@ -27,7 +28,7 @@ export function buildPayload(model, request) {
       payload.thinking = { type: thinking };
     }
   }
-  const schema = schemas[request.phase];
+  const schema = responseSchema;
   if (schema) {
     if (model.structuredOutput === 'json_schema') payload.response_format = { type: 'json_schema', json_schema: { name: request.phase, strict: true, schema } };
     else if (model.structuredOutput === 'json_object') payload.response_format = { type: 'json_object' };
@@ -44,7 +45,10 @@ export async function chatCompletion(model, request, { signal, timeoutMs, payloa
     let detail = typeof response.error?.message === 'string' ? response.error.message.slice(0, 1500) : '';
     for (const [name, value] of Object.entries(process.env)) if (/KEY|TOKEN|SECRET/i.test(name) && value && value.length >= 8) detail = detail.replaceAll(value, '[REDACTED]');
     if (key && key.length >= 8) detail = detail.replaceAll(key, '[REDACTED]');
-    throw new Error(`模型服务 HTTP ${response.status} (${model.id})${detail ? `：${detail}` : ''}`);
+    const error = new Error(`模型服务 HTTP ${response.status} (${model.id})${detail ? `：${detail}` : ''}`);
+    // 交给 src/retry_policy.mjs 判定能否重试：400 之类的状态码必须能被看见。
+    error.status = response.status;
+    throw error;
   }
   const data = response.data;
   if (native) {

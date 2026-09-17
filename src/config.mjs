@@ -50,7 +50,7 @@ export function resolveActiveConfig(config, mode = 'live') {
 
   // 1. Role Fallback:
   const preferredFallbackRoleModel = activeIds.has(config.roles?.chair) ? config.roles.chair : activeModels[0].id;
-  for (const roleKey of ['chair', 'dedup', 'dealer']) {
+  for (const roleKey of ['chair', 'dedup', 'dealer', 'main', 'grounder', 'assembly']) {
     const currentModelId = resolved.roles?.[roleKey];
     if (currentModelId && !activeIds.has(currentModelId)) {
       resolved.roles[roleKey] = preferredFallbackRoleModel;
@@ -131,7 +131,7 @@ export async function saveConfig(root, newConfig) {
       }
     }
     if (newConfig.roles) {
-      for (const roleKey of ['chair', 'dedup', 'dealer']) {
+      for (const roleKey of ['chair', 'dedup', 'dealer', 'main', 'grounder', 'assembly']) {
         if (!validModelIds.has(newConfig.roles[roleKey])) {
           newConfig.roles[roleKey] = fallbackModelId;
         }
@@ -165,10 +165,16 @@ export async function loadConfig(root, mode = 'mock', { allowKeyless = false } =
   if (config.roles) {
     delete config.roles.extractor;
     if (!config.roles.dealer) config.roles.dealer = config.roles.chair || config.seats[0]?.modelId;
+    if (!config.roles.main) config.roles.main = config.roles.chair || config.seats[0]?.modelId;
+    if (!config.roles.grounder) config.roles.grounder = config.roles.dedup || config.roles.main;
+    if (!config.roles.assembly) config.roles.assembly = config.roles.chair || config.roles.main;
   }
   if (config.generation) {
     delete config.generation.extractor;
     if (!config.generation.dealer) config.generation.dealer = structuredClone(config.generation.chair || config.generation.creative || { max_output_tokens: 1024, temperature: 0.2 });
+    if (!config.generation.agent) config.generation.agent = structuredClone(config.generation.chair || { max_output_tokens: 8192, temperature: 0.3, reasoning_effort: 'low' });
+    if (!config.generation.grounder) config.generation.grounder = structuredClone(config.generation.dedup || { max_output_tokens: 16384, temperature: 0.1, reasoning_effort: 'low' });
+    if (!config.generation.assembly) config.generation.assembly = structuredClone(config.generation.chair || { max_output_tokens: 8192, temperature: 0.3, reasoning_effort: 'low' });
     if (config.generation.dedup && config.generation.dedup.reasoning_effort === 'low') {
       config.generation.dedup.reasoning_effort = 'none';
       config.generation.dedup.thinking ??= 'disabled';
@@ -185,6 +191,7 @@ export function validateConfig(c, mode, { allowKeyless = false } = {}) {
   for (const s of c.seats) assert(/^[A-Za-z0-9_-]+$/.test(s.id) && ids.includes(s.modelId), '席位模型引用错误');
   for (const role of ['dedup', 'chair']) assert(ids.includes(c.roles?.[role]), `缺少 ${role} 模型`);
   if (c.roles?.dealer) assert(ids.includes(c.roles.dealer), '缺少 dealer 模型');
+  for (const role of ['main', 'grounder', 'assembly']) if (c.roles?.[role]) assert(ids.includes(c.roles[role]), `缺少 ${role} 模型`);
   for (const phase of ['creative', 'dedup', 'decision', 'chair']) {
     const g = c.generation?.[phase];
     assert(g && Number.isInteger(g.max_output_tokens) && g.max_output_tokens > 0, `${phase} token 上限错误`);
@@ -195,6 +202,12 @@ export function validateConfig(c, mode, { allowKeyless = false } = {}) {
     const g = c.generation.dealer;
     assert(Number.isInteger(g.max_output_tokens) && g.max_output_tokens > 0, 'dealer token 上限错误');
     assert(Number.isFinite(g.temperature) && g.temperature >= 0 && g.temperature <= 2, 'dealer temperature 错误');
+  }
+  for (const phase of ['agent', 'grounder', 'assembly']) {
+    if (!c.generation?.[phase]) continue;
+    const g = c.generation[phase];
+    assert(Number.isInteger(g.max_output_tokens) && g.max_output_tokens > 0, `${phase} token 上限错误`);
+    assert(Number.isFinite(g.temperature) && g.temperature >= 0 && g.temperature <= 2, `${phase} temperature 错误`);
   }
 
   assert(Number.isInteger(c.retries) && c.retries >= 0 && c.retries <= 2, '重试次数须为0–2');

@@ -1,5 +1,5 @@
 {
-  "version": "mvp-2.0-proposals-ranking",
+  "version": "agent-1.0-grounded-dialogue",
   "models": [
     {
       "id": "DEEPSEEK",
@@ -84,11 +84,19 @@
     }
   ],
   "roles": {
+    "main": "GEMINI",
+    "grounder": "DEEPSEEK",
+    "assembly": "GEMINI",
     "dedup": "DEEPSEEK",
     "chair": "GEMINI",
     "dealer": "DEEPSEEK"
   },
   "generation": {
+    "agent": {
+      "temperature": 0.3,
+      "reasoning_effort": "low",
+      "max_output_tokens": 16384
+    },
     "creative": {
       "temperature": 1,
       "reasoning_effort": "low",
@@ -99,6 +107,16 @@
       "reasoning_effort": "none",
       "thinking": "disabled",
       "max_output_tokens": 131072
+    },
+    "grounder": {
+      "temperature": 0.1,
+      "reasoning_effort": "low",
+      "max_output_tokens": 32768
+    },
+    "assembly": {
+      "temperature": 0.3,
+      "reasoning_effort": "low",
+      "max_output_tokens": 16384
     },
     "decision": {
       "temperature": 0.5,

@@ -1,20 +1,68 @@
-import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { RunService } from './src/application/run_service.mjs';
+import { createInterface } from 'node:readline/promises';
+import { stdin as input, stdout as output } from 'node:process';
+import { AgentService } from './src/agent/agent_service.mjs';
+
 const root = path.dirname(fileURLToPath(import.meta.url));
-const demo = process.argv.includes('--demo'), inputPath = process.argv.slice(2).find(a => !a.startsWith('--'));
+
+function valueAfter(flag) {
+  const index = process.argv.indexOf(flag);
+  return index >= 0 ? process.argv[index + 1] : null;
+}
+
+const mode = process.argv.includes('--demo') || process.argv.includes('--mock') ? 'mock' : 'live';
+const workspaceRoot = path.resolve(valueAfter('--workspace') || process.env.AHA_WORKSPACE_ROOT || path.resolve(root, '..'));
+const existingSessionId = valueAfter('--session');
+const initialPrompt = valueAfter('--prompt');
+const service = new AgentService({ root, workspaceRoot });
+await service.init();
+
+let session;
 try {
-  if (!demo && !inputPath) throw new Error('用法：npm run demo；或 npm run run -- problem.json [--demo]');
-  const input = inputPath ? JSON.parse(await readFile(inputPath, 'utf8')) : { problem: '设计一个让玩家持续做有意义选择的轻量合作玩法。', constraints: ['单局10分钟', '两周内可以验证原型'] };
-  const runService = new RunService({ root });
-  await runService.init();
-  const command = { seed: 20260909, experiment: 'treatment', use_operators: true, ...input, mode: demo ? 'mock' : 'live' };
-  const started = await runService.startRun(command);
-  const { run } = started;
-  console.log(`开始运行：${run.id} (${run.mode}, ${run.experiment})`);
-  process.on('SIGINT', () => runService.cancel(run.id));
-  await started.completion;
-  console.log(`${run.status}: ${run.id}\n${run.final?.text ?? run.error}\n\n记录：${runService.store.file(run.id)}`);
-  if (run.status !== 'completed') process.exitCode = 1;
-} catch (e) { console.error(e.message); process.exitCode = 1; }
+  session = existingSessionId
+    ? await service.get(existingSessionId)
+    : await service.create({ workspace_root: workspaceRoot, mode, title: 'CLI 会话' });
+} catch (error) {
+  console.error(error.message);
+  process.exitCode = 1;
+  process.exit();
+}
+
+const unsubscribe = service.subscribe(session.session_id, event => {
+  if (event.event === 'tool_call') process.stderr.write(`\n[工具] ${event.name}\n`);
+  else if (event.phase?.startsWith('aha_') && event.message) process.stderr.write(`[Aha] R${event.round ?? '-'} ${event.message}\n`);
+});
+
+async function send(message) {
+  const answer = await service.turn(session.session_id, message);
+  output.write(`\nAha> ${answer.content}\n\n`);
+}
+
+process.on('SIGINT', () => {
+  try { service.cancel(session.session_id); }
+  catch { void service.stop(); }
+});
+
+try {
+  if (initialPrompt) {
+    await send(initialPrompt);
+  } else if (!input.isTTY) {
+    await send('设计一个让 2–4 名玩家在十分钟内持续做出有意义选择的轻量合作机制。');
+  } else {
+    console.log(`Aha 对话 Agent · ${mode} · ${session.session_id}`);
+    console.log(`工作区：${workspaceRoot}`);
+    console.log('输入 /exit 退出；复杂机制问题会在本会话首次自动触发 Aha。\n');
+    const readline = createInterface({ input, output });
+    while (true) {
+      const message = (await readline.question('You> ')).trim();
+      if (!message) continue;
+      if (message === '/exit' || message === '/quit') break;
+      await send(message);
+    }
+    readline.close();
+  }
+} finally {
+  unsubscribe();
+  await service.stop();
+}

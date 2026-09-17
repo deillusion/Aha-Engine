@@ -1,31 +1,105 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Aha · 创意会议工作台</title><link rel="stylesheet" href="/style.css"></head>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Aha · Grounded Creative Agent</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
 <body>
-  <aside class="sidebar">
-    <a class="brand" href="/" aria-label="Aha 首页"><span class="brand-mark">a<span>✳</span></span><div>Aha<span class="brand-sub">IDEA SEARCH ENGINE</span></div></a>
-    <button id="new-run" class="new-button"><span>＋</span> 新建会议 <span class="key">N</span></button>
-    <div class="sidebar-label">工作空间</div>
-    <button class="nav-item active" id="workspace-nav"><span>◈</span> 会议工作台</button>
-    <button class="nav-item" id="compare-nav"><span>▥</span> 实验对照</button>
-    <button class="nav-item" id="config-nav"><span>⚙</span> 模型与规则</button>
-    <div class="sidebar-label history-label">最近的会议 <span id="history-count">0</span></div>
-    <div class="history-mode-tabs" id="history-mode-tabs">
-      <button type="button" class="history-tab-btn active" data-mode="live">真实 <span id="live-count">0</span></button>
-      <button type="button" class="history-tab-btn" data-mode="mock">模拟 <span id="mock-count">0</span></button>
-      <button type="button" class="history-tab-btn" data-mode="all">全部 <span id="all-count">0</span></button>
-    </div>
-    <div id="history" class="history"></div>
-    <div class="sidebar-footer"><span class="online-dot"></span> 本地工作空间 <span>v0.1</span></div>
-  </aside>
   <div class="shell">
-    <header class="topbar"><div><span class="muted">工作空间</span><span class="slash">/</span><span id="page-title">会议工作台</span></div><div class="top-right"><span class="local-badge">LOCAL PROTOTYPE</span><button id="help-button" class="icon-button" title="查看使用说明">?</button></div></header>
-    <main id="main"></main>
-    <footer class="page-footer">让不同的思路相遇，让有价值的想法留下。<span>Aha · Prototype</span></footer>
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">A</span><div><strong>Aha</strong><small>Grounded Creative Agent</small></div></div>
+      <button id="new-session" class="primary wide">＋ 新会话</button>
+      <div class="session-tab-bar">
+        <button id="tab-live" class="session-tab active" data-mode="live">真实会话 <span id="count-live" class="tab-badge">0</span></button>
+        <button id="tab-mock" class="session-tab" data-mode="mock">模拟推演 <span id="count-mock" class="tab-badge">0</span></button>
+      </div>
+      <div class="session-subbar">
+        <span id="session-subbar-title" class="section-label">真实会话</span>
+        <button id="clear-mock-btn" class="clear-mock-btn" type="button" title="清空所有离线模拟记录" hidden>清空模拟</button>
+      </div>
+      <nav id="session-list" class="session-list"></nav>
+      <div class="sidebar-footer"><button id="open-settings" class="ghost wide">模型设置</button></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="session-heading"><h1 id="session-title">开始创作</h1><button id="workspace-button" class="workspace-button" type="button">选择工作目录</button></div>
+        <div id="run-state" class="state-pill">就绪</div>
+      </header>
+
+      <section class="conversation">
+        <div id="messages" class="messages"></div>
+        <button id="scroll-bottom-btn" class="scroll-bottom-btn" type="button" title="回到底部" aria-label="回到底部" hidden>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </button>
+        <div id="activity" class="activity" hidden><span class="activity-pulse"></span><span id="activity-text"></span></div>
+        <form id="composer" class="composer">
+          <textarea id="message-input" rows="1" placeholder="给 Aha 下达任务，例如：梳理机制、排查冲突、或设计新玩法…"></textarea>
+          <div class="composer-bar">
+            <div class="composer-bar-left">
+              <button type="button" id="aha-toggle" class="aha-toggle-pill active" title="点击开关 Aha 深度推演">
+                <span class="aha-toggle-icon">✦</span>
+                <span class="aha-toggle-label">Aha 探索</span>
+                <span id="aha-toggle-status" class="aha-toggle-status">开启</span>
+              </button>
+            </div>
+            <div class="composer-bar-right">
+              <button type="button" id="composer-model-btn" class="composer-model-btn" title="配置与切换模型">
+                <span class="composer-model-icon">⚙️</span>
+                <span id="composer-model-label" class="composer-model-label">模型加载中…</span>
+                <span class="composer-model-chevron">▾</span>
+              </button>
+              <div class="composer-actions">
+                <button id="cancel-turn" type="button" class="composer-action-btn cancel-btn" hidden title="停止生成">⏹</button>
+                <button id="send-message" type="submit" class="composer-action-btn send-btn" title="发送消息 (Enter)">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="12" y1="19" x2="12" y2="5"></line>
+                    <polyline points="5 12 12 5 19 12"></polyline>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </form>
+      </section>
+    </main>
   </div>
-  <div id="toast" role="status" class="toast hidden"></div>
-  <dialog id="help-dialog"><button id="close-help" class="dialog-close" aria-label="关闭">×</button><span class="eyebrow">QUICK START</span><h2>开始一次创意会议</h2><p>输入开放式问题和硬约束，选择实验方案，然后开始运行。</p><p>系统读取本地配置与 API Key。密钥只保存在服务端。席位、服务商和各阶段参数可在「模型与规则」页面修改。</p><p>运行中可查看每轮原始发言、观点板和决策备忘录，也可随时停止。JSON 导出包含完整请求、响应、操作和不可变快照。</p><p>采用率来自 Chair 自报引用，仅用于追踪输出来源；创意质量需要独立评审。</p></dialog>
-  <dialog id="model-dialog" class="modal-dialog"></dialog>
-  <dialog id="delete-confirm-dialog" class="modal-dialog"></dialog>
+
+  <dialog id="new-session-dialog" class="folder-dialog">
+    <form method="dialog" class="dialog-head"><div><h2>选择工作目录</h2><p>Agent 只会在这个目录中读取和修改文件。</p></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></form>
+    <div class="folder-picker">
+      <div class="path-row"><button id="folder-up" class="ghost" type="button" aria-label="上一级">↑</button><input id="folder-path" type="text" spellcheck="false" aria-label="目录路径"><button id="folder-go" class="ghost" type="button">前往</button></div>
+      <div id="folder-root" class="folder-root"></div>
+      <div id="folder-list" class="folder-list"></div>
+      <div class="session-options">
+        <label><span>运行模式</span><select id="session-mode"><option value="live">真实模型</option><option value="mock">离线模拟</option></select></label>
+        <p>当前目录：<strong id="selected-folder">—</strong></p>
+      </div>
+    </div>
+    <div class="dialog-actions"><button id="create-session" class="primary" type="button">在此目录开始</button></div>
+  </dialog>
+
+  <dialog id="settings-dialog" class="settings-modal-dialog">
+    <div class="settings-modal-header">
+      <div>
+        <h2>大模型选型与规则配置</h2>
+        <p>配置对话主模型、服务商端点及 8 席位推演规则；密钥与设置保存在本地。</p>
+      </div>
+      <button type="button" class="icon-button" id="close-settings-dialog" aria-label="关闭">×</button>
+    </div>
+    <div id="settings-body" class="settings-modal-body">
+      <div id="model-settings" class="model-settings"></div>
+    </div>
+    <div class="settings-modal-footer">
+      <button type="button" id="close-settings-btn" class="ghost">关闭</button>
+      <button type="button" id="save-settings" class="primary">保存并应用配置</button>
+    </div>
+  </dialog>
+  <div id="toast" class="toast" hidden></div>
   <script type="module" src="/app.js"></script>
-</body></html>
+</body>
+</html>

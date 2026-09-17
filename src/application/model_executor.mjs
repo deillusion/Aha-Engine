@@ -4,6 +4,7 @@ import { messages } from '../prompts.mjs';
 import { buildPayload, chatCompletion } from '../provider.mjs';
 import { mockCompletion } from '../mock.mjs';
 import { ModelGate } from '../scheduler.mjs';
+import { isRetryableProviderError, shouldAppendRepairFeedback } from '../retry_policy.mjs';
 
 function retryFeedback(request, error, lastResponse = null) {
   if (lastResponse) request.messages.push({ role: 'assistant', content: String(lastResponse).slice(0, 4000) });
@@ -118,7 +119,7 @@ export function createModelExecutor(run, config, {
             }
           } catch {}
         }
-        if (signal?.aborted || attempt === config.retries) {
+        if (signal?.aborted || attempt === config.retries || !isRetryableProviderError(error)) {
           if (call.salvage !== undefined) {
             const final = new Error(call.error);
             final.salvage = call.salvage;
@@ -126,7 +127,8 @@ export function createModelExecutor(run, config, {
           }
           throw error;
         }
-        retryFeedback(payload, error, call.response ?? null);
+        // 只有本地校验失败才追加「修 JSON」提示；HTTP 400 之类的重试与提示都无意义。
+        if (shouldAppendRepairFeedback(error)) retryFeedback(payload, error, call.response ?? null);
       } finally {
         call.completed_at = now().toISOString();
         call.latency_ms = Date.parse(call.completed_at) - Date.parse(call.started_at);
