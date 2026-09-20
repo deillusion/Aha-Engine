@@ -3,17 +3,27 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { buildPayload, chatCompletion } from '../provider.mjs';
 import { ModelGate } from '../scheduler.mjs';
 import { isRetryableProviderError, shouldAppendRepairFeedback } from '../retry_policy.mjs';
-import { parseStructuredJson } from './schemas.mjs';
+import { parseStructuredJson, cleanJsonText, AGENT_TOOL_SPECS } from './schemas.mjs';
 
 function mockAgentTurn(request) {
   const messages = request.messages ?? [];
-  const lastTool = [...messages].reverse().find(message => message.role === 'user' && message.content.startsWith('Tool results'));
+  const lastTool = [...messages].reverse().find(message =>
+    (message.role === 'user' && typeof message.content === 'string' && message.content.startsWith('Tool results')) ||
+    message.role === 'tool'
+  );
   if (lastTool) {
     let parsed = [];
-    try { parsed = JSON.parse(lastTool.content.slice(lastTool.content.indexOf('\n') + 1)); } catch {}
+    try {
+      if (lastTool.role === 'tool') {
+        const item = JSON.parse(lastTool.content);
+        parsed = Array.isArray(item) ? item : [item];
+      } else {
+        parsed = JSON.parse(lastTool.content.slice(lastTool.content.indexOf('\n') + 1));
+      }
+    } catch {}
     const exploration = parsed.find(item => item.name === 'ExploreDesign' && item.ok);
     if (exploration) {
-      const result = exploration.result;
+      const result = exploration.result || {};
       if (result.confirmation_required) {
         return {
           message: result.question,
@@ -30,15 +40,15 @@ function mockAgentTurn(request) {
     return {
       message: parsed.map(item => item.ok
         ? `${item.name} 已完成：${JSON.stringify(item.result).slice(0, 1200)}`
-        : `${item.name} 未完成：${item.error}`).join('\n'),
+        : `${item.name} 未完成：${item.error?.message ?? item.error}`).join('\n'),
       tool_calls: [],
       done: true
     };
   }
   const user = [...messages].reverse().find(message => message.role === 'user' && !message.content.startsWith('Trusted session state'))?.content ?? '';
-  const explicit = user.trim().startsWith('/aha');
+  const explicit = user.trim().startsWith('/aha') || user.trim().startsWith('/varina');
   const design = /(?:机制|架构|系统设计|数值边界|取舍|困境|玩法设计|design|architecture)/i.test(user);
-  const ahaDisabled = request.context?.enable_aha === false;
+  const ahaDisabled = request.context?.enable_aha === false || request.context?.enable_varina === false;
   if (!ahaDisabled && (explicit || design)) {
     return {
       message: '',
@@ -46,9 +56,10 @@ function mockAgentTurn(request) {
         id: 'mock-explore-1',
         name: 'ExploreDesign',
         arguments_json: JSON.stringify({
-          problem: user.replace(/^\s*\/aha\s*/i, '').trim(),
-          constraints: [],
-          code_context: '离线模拟模式；没有额外工作区事实。',
+          problem: user.replace(/^\s*\/(?:varina|aha)\s*/i, '').trim(),
+          user_constraints: [],
+          source_excerpts: [],
+          agent_hypotheses: [],
           relevant_files: []
         })
       }],
@@ -129,10 +140,11 @@ function mockAssembly(request) {
 
 export function mockStructuredCompletion(request) {
   if (request.phase === 'agent_turn') return mockAgentTurn(request);
-  if (request.phase === 'aha_seat') return mockSeat(request);
-  if (request.phase === 'aha_grounder') return mockGrounder(request);
-  if (request.phase === 'aha_dedup') return mockDedup(request);
-  if (request.phase === 'aha_assembly') return mockAssembly(request);
+  if (request.phase === 'varina_seat' || request.phase === 'aha_seat') return mockSeat(request);
+  if (request.phase === 'varina_grounder' || request.phase === 'aha_grounder') return mockGrounder(request);
+  if (request.phase === 'varina_dedup' || request.phase === 'aha_dedup') return mockDedup(request);
+  if (request.phase === 'varina_assembly' || request.phase === 'aha_assembly') return mockAssembly(request);
+  if (request.phase === 'compaction') return { summary: '## Context Checkpoint\n- 关键决策与当前进展：已完成前序探讨，保留核心设计约束。\n- 用户偏好与约束：保持机制正交与边界清晰。\n- 下一步目标：继续当前任务执行。' };
   throw new Error(`没有 ${request.phase} 的离线模拟器`);
 }
 
@@ -155,15 +167,17 @@ export class ModelGateway {
     this.gates = new Map(config.models.map(model => [model.id, new ModelGate(model.maxConcurrent ?? 32, model.requestIntervalMs ?? 0)]));
   }
 
-  async invoke({ phase, modelId, messages, schema, generation, context = {}, logicalId = phase, validator }) {
+  async invoke({ phase, modelId, messages, schema, generation, context = {}, logicalId = phase, validator, tools }) {
     const model = this.config.models.find(item => item.id === modelId);
     if (!model) throw new Error(`模型不存在：${modelId}`);
+    const resolvedTools = tools !== undefined ? tools : (phase === 'agent_turn' ? AGENT_TOOL_SPECS : undefined);
     const request = {
       phase,
       messages: structuredClone(messages),
       schema,
       generation,
       context,
+      tools: resolvedTools,
       seed: createHash('sha256').update(logicalId).digest().readUInt32LE(0) & 0x7fffffff
     };
     let lastError;
@@ -182,9 +196,67 @@ export class ModelGateway {
           });
           call.usage = result.usage ?? null;
           call.finish_reason = result.finish_reason;
-          value = parseStructuredJson(result.text, schema);
+          if (phase === 'agent_turn') {
+            if (result.tool_calls?.length) {
+              const tool_calls = result.tool_calls.map((tc, index) => {
+                const id = tc.id || `call_${index + 1}_${Date.now()}`;
+                const name = tc.function?.name || tc.name;
+                let args = tc.function?.arguments ?? tc.arguments_json ?? tc.arguments ?? {};
+                if (typeof args !== 'string') args = JSON.stringify(args);
+                return { id, name, arguments_json: args };
+              });
+              value = {
+                message: result.text || '',
+                tool_calls,
+                raw_tool_calls: result.tool_calls,
+                done: false,
+                thought: result.thinking || ''
+              };
+            } else {
+              let parsed = null;
+              if (typeof result.text === 'string' && result.text.trim()) {
+                try {
+                  parsed = parseStructuredJson(result.text, schema);
+                } catch (e) {
+                  if (schema) throw e;
+                }
+              }
+              if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                const hasToolCalls = Array.isArray(parsed.tool_calls) && parsed.tool_calls.length > 0;
+                const tool_calls = hasToolCalls ? parsed.tool_calls.map((tc, index) => {
+                  const id = tc.id || `call_${index + 1}_${Date.now()}`;
+                  const name = tc.function?.name || tc.name;
+                  let args = tc.function?.arguments ?? tc.arguments_json ?? tc.arguments ?? {};
+                  if (typeof args !== 'string') args = JSON.stringify(args);
+                  return { id, name, arguments_json: args };
+                }) : [];
+                const done = parsed.done !== undefined ? Boolean(parsed.done) : (tool_calls.length === 0);
+                const message = typeof parsed.message === 'string' ? parsed.message : (tool_calls.length === 0 ? (result.text || '') : '');
+                const thought = parsed.thought || result.thinking || '';
+                value = { message, tool_calls, done, thought };
+              } else {
+                if (schema) {
+                  throw new Error('模型未返回有效 JSON');
+                }
+                value = {
+                  message: result.text || '',
+                  tool_calls: [],
+                  done: true,
+                  thought: result.thinking || ''
+                };
+              }
+            }
+          } else if (phase === 'compaction') {
+            if (typeof result.text === 'string') {
+              value = { summary: result.text.trim() };
+            } else {
+              value = result;
+            }
+          } else {
+            value = parseStructuredJson(result.text, schema);
+          }
         }
-        if (this.mode === 'mock') parseStructuredJson(JSON.stringify(value), schema);
+        if (this.mode === 'mock' && schema) parseStructuredJson(JSON.stringify(value), schema);
         if (validator) validator(value);
         call.status = 'completed';
         call.completed_at = new Date().toISOString();
@@ -213,10 +285,12 @@ export class ModelGateway {
 
 export function generationFor(config, phase) {
   const fallback = { temperature: 0.2, reasoning_effort: 'low', max_output_tokens: 8192 };
+  if (!config?.generation) return fallback;
   if (phase === 'agent_turn') return config.generation.agent ?? config.generation.chair ?? fallback;
-  if (phase === 'aha_seat') return config.generation.creative ?? fallback;
-  if (phase === 'aha_grounder') return config.generation.grounder ?? config.generation.dedup ?? fallback;
-  if (phase === 'aha_dedup') return config.generation.dedup ?? fallback;
-  if (phase === 'aha_assembly') return config.generation.assembly ?? config.generation.chair ?? fallback;
+  if (phase === 'varina_seat' || phase === 'aha_seat') return config.generation.creative ?? fallback;
+  if (phase === 'varina_grounder' || phase === 'aha_grounder') return config.generation.grounder ?? config.generation.dedup ?? fallback;
+  if (phase === 'varina_dedup' || phase === 'aha_dedup') return config.generation.dedup ?? fallback;
+  if (phase === 'varina_assembly' || phase === 'aha_assembly') return config.generation.assembly ?? config.generation.chair ?? fallback;
+  if (phase === 'compaction') return config.generation.compaction ?? { temperature: 0.1, reasoning_effort: 'low', max_output_tokens: 2048 };
   return fallback;
 }

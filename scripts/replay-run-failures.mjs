@@ -1,7 +1,7 @@
 // Replays the responses a saved run rejected, against the current validators and salvage rules.
 // This is the regression check for the live failure that ended run-1789079578302-da7edfdd at round 4:
 // an echoed "type" key reached a missing schema node and crashed the validator instead of being reported.
-// Usage: node scripts/replay-run-failures.mjs [data/runs/<run-id>.json]
+// Usage: node scripts/replay-run-failures.mjs [.varina/data/runs/<run-id>.json]
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -10,17 +10,26 @@ import { validateCreative, canonicalContributionType } from '../src/schema.mjs';
 
 let file = process.argv[2];
 if (!file) {
-  if (existsSync('data/runs/live/run-1789079578302-da7edfdd.json')) {
-    file = 'data/runs/live/run-1789079578302-da7edfdd.json';
-  } else if (existsSync('data/runs/mock/run-1789079578302-da7edfdd.json')) {
-    file = 'data/runs/mock/run-1789079578302-da7edfdd.json';
-  } else {
-    file = 'data/runs/run-1789079578302-da7edfdd.json';
-  }
+  const defaults = [
+    '.varina/data/runs/live/run-1789079578302-da7edfdd.json',
+    '.varina/data/runs/mock/run-1789079578302-da7edfdd.json',
+    '.varina/data/runs/run-1789079578302-da7edfdd.json',
+    'data/runs/live/run-1789079578302-da7edfdd.json',
+    'data/runs/mock/run-1789079578302-da7edfdd.json',
+    'data/runs/run-1789079578302-da7edfdd.json'
+  ];
+  file = defaults.find(existsSync) || defaults[0];
 } else if (!existsSync(file)) {
   const id = path.basename(file, '.json');
-  if (existsSync(path.join('data/runs/live', `${id}.json`))) file = path.join('data/runs/live', `${id}.json`);
-  else if (existsSync(path.join('data/runs/mock', `${id}.json`))) file = path.join('data/runs/mock', `${id}.json`);
+  const candidates = [
+    path.join('.varina/data/runs/live', `${id}.json`),
+    path.join('.varina/data/runs/mock', `${id}.json`),
+    path.join('.varina/data/runs', `${id}.json`),
+    path.join('data/runs/live', `${id}.json`),
+    path.join('data/runs/mock', `${id}.json`),
+    path.join('data/runs', `${id}.json`)
+  ];
+  file = candidates.find(existsSync) || file;
 }
 const run = JSON.parse(await readFile(file, 'utf8'));
 const snapshots = new Map(run.snapshots.map(s => [s.version, s]));

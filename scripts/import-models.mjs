@@ -25,7 +25,7 @@ config.roles = { dedup: 'GLM', chair: 'GEMINI' };
 config.retryDelayMs = 5000;
 config.timeoutMs = 180000;
 await writeFile(path.join(root, 'config.local.json'), JSON.stringify(config, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' });
-const env = pairs.map((p, i) => `${config.models[i].apiKeyEnv}=${p.key}`).join('\n') + '\nPORT=4317\n# Optional: AHA_PROXY_URL=http://127.0.0.1:7890 (or direct)\n';
+const env = pairs.map((p, i) => `${config.models[i].apiKeyEnv}=${p.key}`).join('\n') + '\nPORT=27333\n# Optional: VARINA_PROXY_URL=http://127.0.0.1:7890 (or direct)\n';
 await writeFile(path.join(root, '.env'), env, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
 console.log('已导入三个模型，席位 DeepSeek 2 / GLM 2 / Gemini 4。密钥仅写入本地 .env。');
 console.log('Gemini 使用 AI Studio 官方兼容端点；密钥前缀不用于判断账户平台。新密钥仍需连通验证。');

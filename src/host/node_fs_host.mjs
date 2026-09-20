@@ -5,15 +5,15 @@ import {
 } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 
-const DEFAULT_IGNORES = new Set(['.git', 'node_modules', 'dist', 'build']);
+const DEFAULT_IGNORES = new Set(['.git', 'node_modules', 'dist', 'build', '.varina', '.aha']);
 const BINARY_BYTES = new Set([0]);
 // 单条命中行的宽度上限，对标 Claude Code 的 ripgrep 参数 --max-columns 500
 // （src/tools/GrepTool/GrepTool.ts:338）。工作区里存在「整个文件就是一行」的数据文件，
 // 不限宽的话一条命中就能把 1.8MB 原文塞进对话。
 const DEFAULT_MAX_MATCH_LINE_CHARS = 500;
-// 超限工具结果的落盘目录。放在工作区根的 .aha 下，listFiles 默认会跳过它，
+// 超限工具结果的落盘目录。放在工作区根的 .varina 下，listFiles 默认会跳过它，
 // 所以落盘内容不会再被 Grep/Glob 检索到，但模型仍可用 Read 按路径取回。
-const DEFAULT_RESULT_ROOT = '.aha/tool-results';
+const DEFAULT_RESULT_ROOT = '.varina/tool-results';
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
@@ -104,7 +104,7 @@ export class StaleFileError extends Error {
 export class NodeFsHost {
   constructor(workspaceRoot, {
     maxFileBytes = 2 * 1024 * 1024,
-    backupRoot = '.aha/backups',
+    backupRoot = '.varina/backups',
     resultRoot = DEFAULT_RESULT_ROOT
   } = {}) {
     this.workspaceRoot = path.resolve(workspaceRoot);
@@ -159,7 +159,6 @@ export class NodeFsHost {
         signal?.throwIfAborted();
         if (results.length >= maxResults) return;
         if (DEFAULT_IGNORES.has(entry.name)) continue;
-        if (entry.name === '.aha' && path.resolve(directory) === this.workspaceRoot) continue;
         if (!includeHidden && entry.name.startsWith('.')) continue;
         const absolute = path.join(directory, entry.name);
         if (entry.isSymbolicLink()) {
@@ -315,9 +314,9 @@ export class NodeFsHost {
     }
   }
 
-  // 超限工具结果的落盘出口。写入 this.resultRoot（默认 .aha/tool-results/），
+  // 超限工具结果的落盘出口。写入 this.resultRoot（默认 .varina/tool-results/），
   // 该目录位于工作区内，模型可用 Read 按返回的 filePath 取回；因为 listFiles 会跳过
-  // 工作区根的 .aha，它自己不会再被检索到。返回的是工作区相对路径。
+  // 工作区根的 .varina，它自己不会再被检索到。返回的是工作区相对路径。
   async persistToolResult(label, text) {
     const safe = String(label ?? 'result').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 120) || 'result';
     const target = await this.assertContained(slash(path.posix.join(this.resultRoot, `${safe}.json`)), { allowMissing: true });
@@ -344,7 +343,7 @@ export class NodeFsHost {
   }
 
   async atomicReplace(targetPath, bytes) {
-    const tempPath = `${targetPath}.aha-tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
+    const tempPath = `${targetPath}.varina-tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
     await mkdir(path.dirname(targetPath), { recursive: true });
     const handle = await open(tempPath, 'wx');
     try {
@@ -364,7 +363,12 @@ export class MemoryHost {
   }
 
   async init() { return this; }
-  async listFiles(pattern = '**/*') { const matcher = globRegex(pattern); return [...this.files.keys()].filter(name => matcher.test(name)).sort(); }
+  async listFiles(pattern = '**/*') {
+    const matcher = globRegex(pattern);
+    return [...this.files.keys()]
+      .filter(name => !name.split('/').some(segment => DEFAULT_IGNORES.has(segment)) && matcher.test(name))
+      .sort();
+  }
   async grep(query, { isRegex = false, pathFilter = '**/*', maxResults = 200, maxLineChars = DEFAULT_MAX_MATCH_LINE_CHARS } = {}) {
     const matcher = isRegex ? new RegExp(query, 'iu') : null;
     const matches = [];

@@ -210,7 +210,9 @@ export function validateConfig(c, mode, { allowKeyless = false } = {}) {
     assert(Number.isFinite(g.temperature) && g.temperature >= 0 && g.temperature <= 2, `${phase} temperature 错误`);
   }
 
-  assert(Number.isInteger(c.retries) && c.retries >= 0 && c.retries <= 2, '重试次数须为0–2');
+  assert(c.retries == null || (Number.isInteger(c.retries) && c.retries >= 0 && c.retries <= 2), '重试次数须为0–2');
+  assert(c.max_tool_iterations == null || (Number.isInteger(c.max_tool_iterations) && c.max_tool_iterations >= 1), 'max_tool_iterations 须为正整数');
+  assert(c.agent?.max_tool_iterations == null || (Number.isInteger(c.agent.max_tool_iterations) && c.agent.max_tool_iterations >= 1), 'agent.max_tool_iterations 须为正整数');
   assert(Number.isFinite(c.timeoutMs) && c.timeoutMs >= 100, 'timeoutMs 无效');
   assert(c.retryDelayMs == null || (Number.isFinite(c.retryDelayMs) && c.retryDelayMs >= 0), 'retryDelayMs 无效');
   for (const k of ['minimumCreativeRatio', 'minimumDecisionRatio']) assert(c[k] > 0 && c[k] <= 1, `${k} 须大于0且不超过1`);

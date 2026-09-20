@@ -138,5 +138,6 @@
   "timeoutMs": 180000,
   "minimumCreativeRatio": 0.5,
   "minimumDecisionRatio": 0.5,
-  "retryDelayMs": 5000
+  "retryDelayMs": 5000,
+  "max_tool_iterations": 100
 }

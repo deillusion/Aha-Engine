@@ -1,12 +1,42 @@
 import { renderMarkdown } from './markdown.js';
 
 const $ = selector => document.querySelector(selector);
+
+function loadCollapsedFolders() {
+  try {
+    return new Set(JSON.parse((localStorage.getItem('varina_collapsed_folders') || localStorage.getItem('aha_collapsed_folders')) || '[]'));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsedFolders(set) {
+  try {
+    localStorage.setItem('varina_collapsed_folders', JSON.stringify([...set]));
+  } catch {}
+}
+
+function normalizePath(p) {
+  if (!p) return '';
+  return String(p).replace(/\\/g, '/').replace(/\/+$/, '').trim();
+}
+
+function getFolderName(normalizedPath) {
+  if (!normalizedPath) return '未命名工作区';
+  const parts = normalizedPath.split(/[\\/]/).filter(Boolean);
+  return parts.pop() || normalizedPath;
+}
+
 const state = {
   sessions: [], sessionCounts: { live: 0, mock: 0 }, activeMode: 'live',
   session: null, source: null, config: null, polling: false,
   activities: [], ahaTabs: {}, folder: null, pendingMessage: '',
-  ahaEnabled: localStorage.getItem('aha_enabled') !== 'false',
-  editingConfig: null
+  ahaEnabled: (localStorage.getItem('varina_enabled') ?? localStorage.getItem('aha_enabled')) !== 'false',
+  editingConfig: null,
+  userScrolledUp: false,
+  forceScrollToBottom: false,
+  collapsedFolders: loadCollapsedFolders(),
+  scrollCache: new Map()
 };
 
 function getModelIcon(modelId = '') {
@@ -22,17 +52,17 @@ function getModelIcon(modelId = '') {
   return '🤖';
 }
 
-function updateAhaToggle() {
+function updateVarinaToggle() {
   const btn = $('#aha-toggle');
   const status = $('#aha-toggle-status');
   if (!btn) return;
   if (state.ahaEnabled) {
     btn.className = 'aha-toggle-pill active';
-    btn.title = 'Aha 深度探索已开启：遇到机制难题时自动展开 8 席位推演（点击可关闭）';
+    btn.title = 'Varina 深度探索已开启：遇到机制、规则或困境将自动启动 8 席位多视角推演（点击可关闭）';
     if (status) status.textContent = '开启';
   } else {
     btn.className = 'aha-toggle-pill inactive';
-    btn.title = 'Aha 深度探索已关闭：仅作为日常 Agent 对话与代码/文件操作（点击可开启）';
+    btn.title = 'Varina 深度探索已关闭：仅日常对话与文件读写（点击可开启）';
     if (status) status.textContent = '关闭';
   }
 }
@@ -79,9 +109,102 @@ function toast(message) {
 function setRunning(running, label = '就绪') {
   $('#run-state').textContent = label;
   $('#run-state').classList.toggle('running', running);
+  $('#send-message').hidden = running;
   $('#send-message').disabled = running;
   $('#cancel-turn').hidden = !running;
   $('#message-input').disabled = running;
+}
+
+function renderSessionItem(session) {
+  const isActive = state.session?.session_id === session.session_id;
+  return `
+    <div class="session-item-row ${isActive ? 'active' : ''}">
+      <button class="session-item" data-session="${escapeHtml(session.session_id)}" title="${escapeHtml(session.title)}">
+        <strong>${escapeHtml(session.title)}</strong>
+        <small>${session.current_turn} 轮 · ${session.varina_runs ?? session.aha_runs} 次 Varina · ${session.mode === 'mock' ? '<span class="mode-tag mock">模拟</span>' : '<span class="mode-tag live">真实</span>'}</small>
+      </button>
+      <button class="session-delete-btn" data-delete-session="${escapeHtml(session.session_id)}" title="删除此会话" aria-label="删除此会话">×</button>
+    </div>`;
+}
+
+function renderFolderGroup(folder) {
+  const isCollapsed = state.collapsedFolders.has(folder.key);
+  const sessionRowsHtml = folder.sessions.map(renderSessionItem).join('');
+
+  return `
+    <div class="folder-group ${isCollapsed ? 'collapsed' : ''}" data-folder-key="${escapeHtml(folder.key)}">
+      <div class="folder-header" data-toggle-folder="${escapeHtml(folder.key)}" title="工作区目录: ${escapeHtml(folder.path)}">
+        <span class="folder-chevron">${isCollapsed ? '▸' : '▾'}</span>
+        <span class="folder-icon" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+          </svg>
+        </span>
+        <span class="folder-title">${escapeHtml(folder.name)}</span>
+        <span class="folder-count">${folder.sessions.length}</span>
+        <div class="folder-actions">
+          <button class="folder-action-btn" data-create-in-folder="${escapeHtml(folder.path)}" title="基于此目录新建${state.activeMode === 'mock' ? '模拟' : '真实'}会话" aria-label="基于此目录新建会话">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="folder-sessions" ${isCollapsed ? 'hidden' : ''}>
+        ${sessionRowsHtml}
+      </div>
+    </div>`;
+}
+
+function toggleFolderCollapse(folderKey) {
+  if (!folderKey) return;
+  const key = normalizePath(folderKey).toLowerCase();
+  const isNowCollapsed = !state.collapsedFolders.has(key);
+  if (isNowCollapsed) {
+    state.collapsedFolders.add(key);
+  } else {
+    state.collapsedFolders.delete(key);
+  }
+  saveCollapsedFolders(state.collapsedFolders);
+
+  const groupEl = document.querySelector(`.folder-group[data-folder-key="${CSS.escape(key)}"]`);
+  if (groupEl) {
+    groupEl.classList.toggle('collapsed', isNowCollapsed);
+    const chevron = groupEl.querySelector('.folder-chevron');
+    if (chevron) chevron.textContent = isNowCollapsed ? '▸' : '▾';
+    const sessionsEl = groupEl.querySelector('.folder-sessions');
+    if (sessionsEl) sessionsEl.hidden = isNowCollapsed;
+  } else {
+    renderSessions();
+  }
+}
+
+async function createSessionInFolder(folderPath) {
+  if (!folderPath) return;
+  const mode = state.activeMode || 'live';
+  const folderName = getFolderName(normalizePath(folderPath));
+  try {
+    toast(`正在「${folderName}」中创建新会话…`);
+    const session = await api('/api/agent/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspace_root: folderPath, mode })
+    });
+    state.activeMode = mode;
+    const folderKey = normalizePath(folderPath).toLowerCase();
+    state.collapsedFolders.delete(folderKey);
+    saveCollapsedFolders(state.collapsedFolders);
+    await loadSessions();
+    await openSession(session.session_id);
+    const pending = state.pendingMessage;
+    state.pendingMessage = '';
+    if (pending) await sendMessage(pending);
+    else $('#message-input')?.focus();
+    toast(`已在「${folderName}」创建${mode === 'mock' ? '模拟' : '真实'}会话`);
+  } catch (error) {
+    toast(error.message);
+  }
 }
 
 function renderSessions() {
@@ -111,21 +234,63 @@ function renderSessions() {
     return;
   }
 
-  $('#session-list').innerHTML = filtered.map(session => `
-    <div class="session-item-row ${state.session?.session_id === session.session_id ? 'active' : ''}">
-      <button class="session-item" data-session="${escapeHtml(session.session_id)}" title="${escapeHtml(session.title)}">
-        <strong>${escapeHtml(session.title)}</strong>
-        <small>${session.current_turn} 轮 · ${session.aha_runs} 次 Aha · ${session.mode === 'mock' ? '<span class="mode-tag mock">模拟</span>' : '<span class="mode-tag live">真实</span>'}</small>
-      </button>
-      <button class="session-delete-btn" data-delete-session="${escapeHtml(session.session_id)}" title="删除此会话" aria-label="删除此会话">×</button>
-    </div>`).join('');
+  // 先按工作区聚合当前模式下的会话
+  const folderMap = new Map();
+  const unfiledSessions = [];
+
+  for (const session of filtered) {
+    const ws = normalizePath(session.workspace_root);
+    if (!ws) {
+      unfiledSessions.push(session);
+    } else {
+      const folderKey = ws.toLowerCase();
+      if (!folderMap.has(folderKey)) {
+        folderMap.set(folderKey, {
+          path: session.workspace_root,
+          key: folderKey,
+          name: getFolderName(ws),
+          sessions: [],
+          latestUpdate: 0
+        });
+      }
+      const group = folderMap.get(folderKey);
+      group.sessions.push(session);
+      const ts = new Date(session.updated_at || session.created_at || 0).getTime();
+      if (ts > group.latestUpdate) group.latestUpdate = ts;
+    }
+  }
+
+  // 文件夹按最新会话活跃时间排序
+  const sortedFolders = Array.from(folderMap.values()).sort((a, b) => b.latestUpdate - a.latestUpdate);
+
+  for (const folder of sortedFolders) {
+    folder.sessions.sort((a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0));
+  }
+
+  unfiledSessions.sort((a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0));
+
+  let html = sortedFolders.map(folder => renderFolderGroup(folder)).join('');
+  if (unfiledSessions.length) {
+    html += `
+      <div class="recent-section">
+        <div class="recent-header">
+          <span class="section-label">最近</span>
+          <span class="recent-count">${unfiledSessions.length}</span>
+        </div>
+        <div class="recent-sessions">
+          ${unfiledSessions.map(renderSessionItem).join('')}
+        </div>
+      </div>`;
+  }
+
+  $('#session-list').innerHTML = html;
 }
 
 function emptyState() {
   return `<div class="empty-state">
     <div class="orb">✦</div>
     <h2>今天想创造什么？</h2>
-    <p>先选择一个工作目录。Aha 会在同一段对话里阅读资料、使用工具，并在需要时展开完整的多视角探索。</p>
+    <p>先选择一个工作目录。Varina 会在同一段对话里阅读资料、使用工具，并在需要时展开完整的多视角探索。</p>
     <button class="workspace-cta" data-open-workspace>⌁&nbsp; 选择工作目录</button>
     <div class="suggestions">
       <button data-suggestion="先读一下工作区中的设计文档，告诉我目前最核心的机制约束。">梳理已有设定与约束</button>
@@ -140,16 +305,154 @@ function pointById(run, id) {
   return run.board?.points?.find(point => point.id === id);
 }
 
+const CREATIVE_SEAT_SYSTEM_PROMPT = `You are an expert creative system designer. Propose atomic mechanisms under the stimulation of three assigned cognitive operators.
+
+Hard rules:
+1. Treat original_user_request as the authoritative task. Project context supplies orientation, not a replacement task. Agent task framing and agent hypotheses are non-binding and may be challenged.
+2. You do not access the workspace. Do not invent file names or implementation details. Use only verified facts supplied in the frozen packet for implementation-dependent claims. Project intent and declared invariants may guide relevance, but descriptive implementation claims still require verification.
+3. Put implementation-dependent assumptions in verification_requests (maximum 2 requests, claim_id must be "V1", "V2"). Every affected_local_ids entry must strictly match a contribution local_id defined in this response.
+4. Return only JSON matching the schema.
+5. Produce 0–3 genuinely novel atomic contributions (local_id must be formatted as "C1", "C2", "C3"). Rewording the board is not novelty.
+6. Echo seat_id and packet_token exactly.`;
+
+function findExploreStepForRun(runId) {
+  if (!state.session) return null;
+  const messages = state.session.messages ?? [];
+  for (const msg of messages) {
+    if (msg.varina_run_id === runId || msg.aha_run_id === runId) {
+      const step = msg.steps?.find(s => s.name === 'ExploreDesign');
+      if (step) return step;
+    }
+    const step = msg.steps?.find(s => s.name === 'ExploreDesign' && (s.result?.run_id === runId || s.id === runId));
+    if (step) return step;
+  }
+  const activeSteps = state.session.active_turn?.steps ?? [];
+  const activeStep = activeSteps.find(s => s.name === 'ExploreDesign' && (s.id === runId || s.result?.run_id === runId));
+  if (activeStep) return activeStep;
+  return null;
+}
+
+function getFrozenPacketJson(run) {
+  if (run.commonPrefix) {
+    try {
+      const parsed = typeof run.commonPrefix === 'string' ? JSON.parse(run.commonPrefix) : run.commonPrefix;
+      return JSON.stringify(parsed, null, 2);
+    } catch {
+      return run.commonPrefix;
+    }
+  }
+  if (run.frozenPacket) {
+    return JSON.stringify(run.frozenPacket, null, 2);
+  }
+  const obj = {
+    frozen_shared_input_packet: {
+      original_user_request: run.originalUserRequest || run.problem || '',
+      task_framing: run.taskFraming || run.problem || '',
+      project_context: run.projectContext || (state.session?.project_context ?? ''),
+      user_constraints: run.userConstraints || [],
+      verified_investigation_context: run.codeContext || (run.sourceExcerpts?.length ? JSON.stringify(run.sourceExcerpts, null, 2) : ''),
+      agent_hypotheses: run.agentHypotheses || [],
+      verified_facts: (run.facts || []).filter(f => !['unknown', 'stale'].includes(f.status)).map(f => ({
+        fact_id: f.fact_id ?? f.fact_ref,
+        fact_ref: f.fact_ref,
+        status: f.status,
+        semantic_summary: f.semantic_summary ?? f.claim,
+        correction: f.correction ?? null
+      })),
+      current_board: run.board || { points: [] },
+      repository_snapshot_id: run.repositorySnapshotId || '',
+      packet_token: run.packetToken || ''
+    },
+    output_contract: 'Return the required CreativeSeatResponse JSON. The packet above is frozen and identical for all seats.'
+  };
+  return JSON.stringify(obj, null, 2);
+}
+
+function formatExplorePrompt(run) {
+  const frozenJson = getFrozenPacketJson(run);
+  let operatorsSuffix = '';
+  if (run.currentAssignments?.length) {
+    operatorsSuffix = run.currentAssignments.map(a => {
+      const ops = (a.operators || []).map(op => `- ${op.id || op.operator_id} ${op.name}: ${op.prompt}`).join('\n');
+      return `Seat ID: ${a.seat_id}\nAssigned operators:\n${ops}`;
+    }).join('\n\n');
+  } else {
+    operatorsSuffix = `Seat ID: seat-1\nAssigned operators:\n- (席位思维算子将在各轮并发推演时动态抽取并拼接)`;
+  }
+
+  return `================================================================================
+[1] SYSTEM PROMPT (CREATIVE_SEAT_SYSTEM_PROMPT)
+================================================================================
+${CREATIVE_SEAT_SYSTEM_PROMPT}
+
+================================================================================
+[2] USER MESSAGE 1: FROZEN COMMON PREFIX (JSON)
+================================================================================
+${frozenJson}
+
+================================================================================
+[3] USER MESSAGE 2: SEAT-SPECIFIC SUFFIX (Sample Seat)
+================================================================================
+Seat-specific suffix:
+${operatorsSuffix}`;
+}
+
+async function copyHeroPrompt(runId) {
+  const runs = state.session?.varina_runs ?? state.session?.aha_runs ?? [];
+  const activeRuntime = state.session?.active_varina_runtime || state.session?.active_aha_runtime;
+  const rawRun = runs.find(r => r.run_id === runId) || (activeRuntime?.run_id === runId ? activeRuntime : null);
+  const run = rawRun ? viewRun(rawRun, activeRuntime?.run_id === runId ? activeRuntime : null) : null;
+  if (!run) {
+    toast('未找到该推演的完整信息');
+    return;
+  }
+  const promptText = formatExplorePrompt(run);
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(promptText);
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = promptText;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+    toast('已复制完整推演 Prompt 到剪贴板');
+  } catch (err) {
+    toast(`复制失败: ${err.message}`);
+  }
+}
+
 function viewRun(record, runtime = null) {
   const source = runtime ?? record ?? {};
   const handoff = source.handoff ?? {};
+  const runId = source.run_id ?? record?.run_id ?? 'aha-live';
+  const step = findExploreStepForRun(runId);
+  const stepInput = step?.input ?? {};
+
   return {
-    id: source.run_id ?? record?.run_id ?? 'aha-live',
-    problem: source.problem ?? record?.problem ?? '',
+    id: runId,
+    problem: source.problem ?? record?.problem ?? stepInput.problem ?? '',
+    originalUserRequest: source.original_user_request ?? record?.original_user_request ?? handoff.original_user_request ?? source.problem ?? record?.problem ?? stepInput.problem ?? '',
+    taskFraming: source.task_framing ?? record?.task_framing ?? handoff.task_framing ?? stepInput.problem ?? '',
+    userConstraints: source.user_constraints ?? record?.user_constraints ?? handoff.user_constraints ?? source.hard_constraints ?? record?.hard_constraints ?? stepInput.user_constraints ?? stepInput.constraints ?? [],
+    agentHypotheses: source.agent_hypotheses ?? record?.agent_hypotheses ?? handoff.agent_hypotheses ?? stepInput.agent_hypotheses ?? [],
+    codeContext: source.code_context ?? record?.code_context ?? handoff.code_context ?? '',
+    sourceExcerpts: source.source_excerpts ?? record?.source_excerpts ?? handoff.source_excerpts ?? stepInput.source_excerpts ?? [],
+    relevantFiles: source.relevant_files ?? record?.relevant_files ?? handoff.relevant_files ?? stepInput.relevant_files ?? [],
+    projectContext: source.project_context ?? record?.project_context ?? handoff.project_context ?? '',
+    commonPrefix: source.common_prefix ?? record?.common_prefix ?? handoff.common_prefix ?? null,
+    frozenPacket: source.frozen_packet ?? record?.frozen_packet ?? handoff.frozen_packet ?? null,
+    repositorySnapshotId: source.repository_snapshot_id ?? record?.repository_snapshot_id ?? handoff.repository_snapshot_id ?? '',
+    packetToken: source.current_packet_token ?? record?.current_packet_token ?? '',
     state: handoff.state ?? source.state ?? source.status ?? record?.state ?? 'active',
     stopReason: handoff.stop_reason ?? source.stop_reason ?? record?.stop_reason,
     rounds: handoff.rounds_executed ?? source.rounds_executed ?? source.round_records?.length ?? record?.rounds_executed ?? 0,
-    currentRound: source.current_round ?? handoff.rounds_executed ?? record?.rounds_executed ?? 0,
+    currentRound: source.current_round ?? handoff.rounds_executed ?? record?.rounds_executed ?? (source.status === 'active' || record?.state === 'active' ? 1 : 0),
     maxRounds: source.max_rounds ?? 5,
     board: handoff.meeting_board ?? source.final_meeting_board ?? source.meeting_board ?? source.current_board ?? record?.final_meeting_board ?? { points: [] },
     facts: handoff.fact_ledger ?? source.final_fact_ledger ?? source.fact_ledger ?? record?.final_fact_ledger ?? [],
@@ -158,7 +461,9 @@ function viewRun(record, runtime = null) {
     rejected: handoff.rejected_directions ?? source.rejected_directions ?? record?.rejected_directions ?? [],
     degradations: handoff.degradations ?? source.degradations ?? record?.degradations ?? [],
     roundRecords: handoff.round_records ?? source.round_records ?? record?.round_records ?? [],
-    seatResponses: handoff.seat_responses ?? source.seat_responses ?? record?.seat_responses ?? []
+    seatResponses: handoff.seat_responses ?? source.seat_responses ?? record?.seat_responses ?? [],
+    partialSeatResponses: source.partial_seat_responses ?? [],
+    currentAssignments: source.current_assignments ?? []
   };
 }
 
@@ -208,7 +513,8 @@ function renderRounds(run, live = false) {
 
   for (let rnd = 1; rnd <= maxRound; rnd++) {
     const record = run.roundRecords.find(r => r.round_index === rnd);
-    const roundSeatsData = run.seatResponses.find(r => r.round === rnd)?.responses || [];
+    const roundSeatsData = run.seatResponses.find(r => r.round === rnd)?.responses
+      || (rnd === run.currentRound && run.partialSeatResponses?.length ? run.partialSeatResponses : []);
     const isCurrentRound = (live || run.state === 'active') && (run.currentRound === rnd || (!run.currentRound && rnd === maxRound));
 
     const seatCardsHtml = [];
@@ -218,9 +524,10 @@ function renderRounds(run, live = false) {
       const resp = roundSeatsData.find(s => s.seat_id === cfgSeat.id || s.seat_id === defaultId || s.seat_id === `Seat ${i + 1}`)
                 || (roundSeatsData[i] && (roundSeatsData.length <= 8) ? roundSeatsData[i] : null);
 
-      const seatId = resp?.seat_id || cfgSeat.id;
-      const modelId = resp?.modelId || cfgSeat.modelId || 'auto';
-      const operators = resp?.operators || [];
+      const assignment = rnd === run.currentRound ? run.currentAssignments?.find(a => a.seat_id === cfgSeat.id || a.seat_id === defaultId) : null;
+      const seatId = resp?.seat_id || assignment?.seat_id || cfgSeat.id;
+      const modelId = resp?.modelId || assignment?.modelId || cfgSeat.modelId || 'auto';
+      const operators = (resp?.operators?.length) ? resp.operators : (assignment?.operators || []);
       const isCardRunning = isCurrentRound && !resp;
 
       let bodyHtml = '';
@@ -245,7 +552,7 @@ function renderRounds(run, live = false) {
               <span>🧠 席位分析 · 机制推演</span>
               <span>展开 / 收起</span>
             </summary>
-            <div class="thinking-content">${escapeHtml(resp.analysis_summary || '本轮机制推演完成。')}</div>
+            <div class="thinking-content" data-scroll-id="scroll-seat-think-R${rnd}-${escapeHtml(seatId)}">${escapeHtml(resp.analysis_summary || '本轮机制推演完成。')}</div>
           </details>
           <div class="seat-body">
             ${(resp.contributions || []).map(c => `
@@ -328,7 +635,74 @@ function renderRejected(run) {
   return run.rejected.length ? `<div class="card-grid">${run.rejected.map(item => `<article class="data-card rejected-card"><header><span>${escapeHtml(item.rejection_id)}</span><span>R${item.round}</span></header><p>${escapeHtml((item.texts ?? []).join(' / '))}</p><footer><strong>淘汰原因</strong>${escapeHtml(item.reason)}</footer></article>`).join('')}</div>` : '<div class="workbench-empty">还没有被淘汰的重复或无效方向。</div>';
 }
 
-function renderAhaWorkspace(input, live = false) {
+function renderExplorePromptTab(run) {
+  const fullPromptText = formatExplorePrompt(run);
+  const constraints = run.userConstraints || [];
+  const hypotheses = run.agentHypotheses || [];
+
+  return `
+    <div class="explore-prompt-tab">
+      <div class="explore-prompt-header">
+        <div class="explore-prompt-meta">
+          <h4>席位输入基准 Prompt 构成</h4>
+          <p>Varina 采用统一冻结上下文（Frozen Shared Packet），所有创意席位在同一轮次读取完全一致的 System Prompt、原始请求、任务定义、硬约束与代码上下文。</p>
+        </div>
+        <button type="button" class="varina-copy-prompt-btn tab-copy-btn" data-copy-hero-prompt="${escapeHtml(run.id)}">
+          <span>📋</span> 复制完整 Prompt
+        </button>
+      </div>
+
+      <div class="explore-prompt-cards-grid">
+        <article class="data-card prompt-section-card">
+          <header><span>01 · SYSTEM PROMPT</span><span>硬约束规则</span></header>
+          <p>CreativeSeat 席位专家设定，强制 6 项硬规则（禁止擅自读写工作区、严格引用验证事实、限定 0–3 条新机制观点等）。</p>
+          <pre class="prompt-code-snippet">${escapeHtml(CREATIVE_SEAT_SYSTEM_PROMPT)}</pre>
+        </article>
+
+        <article class="data-card prompt-section-card">
+          <header><span>02 · 任务与原始请求</span><span>Level-0 意图</span></header>
+          <div class="prompt-field-group">
+            <div class="prompt-field-label">原始用户问题 (original_user_request):</div>
+            <div class="prompt-field-val">${escapeHtml(run.originalUserRequest || run.problem || '')}</div>
+          </div>
+          ${run.taskFraming && run.taskFraming !== (run.originalUserRequest || run.problem) ? `
+          <div class="prompt-field-group">
+            <div class="prompt-field-label">Agent 任务定义 (task_framing):</div>
+            <div class="prompt-field-val">${escapeHtml(run.taskFraming)}</div>
+          </div>` : ''}
+          ${constraints.length ? `
+          <div class="prompt-field-group">
+            <div class="prompt-field-label">显式约束溯源 (user_constraints):</div>
+            <ul class="prompt-constraints-list">
+              ${constraints.map(c => {
+                const text = typeof c === 'string' ? c : (c.constraint || JSON.stringify(c));
+                const quote = typeof c === 'object' && c.source_quote ? ` (原文溯源: "${c.source_quote}")` : '';
+                return `<li><code>${escapeHtml(text)}</code>${escapeHtml(quote)}</li>`;
+              }).join('')}
+            </ul>
+          </div>` : ''}
+          ${hypotheses.length ? `
+          <div class="prompt-field-group">
+            <div class="prompt-field-label">Agent 初始假设 (agent_hypotheses，席位可质疑):</div>
+            <ul class="prompt-constraints-list">
+              ${hypotheses.map(h => `<li>${escapeHtml(h)}</li>`).join('')}
+            </ul>
+          </div>` : ''}
+        </article>
+      </div>
+
+      <div class="explore-prompt-raw-wrapper">
+        <div class="explore-prompt-raw-title">
+          <span>完整拼接 Prompt 全文 (Full Spliced Prompt)</span>
+          <span class="char-count">${fullPromptText.length} 字符</span>
+        </div>
+        <pre class="explore-prompt-raw-pre" data-scroll-id="scroll-raw-prompt-${escapeHtml(run.id)}">${escapeHtml(fullPromptText)}</pre>
+      </div>
+    </div>
+  `;
+}
+
+function renderAhaWorkspace(input, live = false, openDetails = new Set()) {
   const run = input.board ? input : viewRun(input);
   const defaultTab = 'rounds';
   const activeTab = state.ahaTabs[run.id] ?? defaultTab;
@@ -337,30 +711,59 @@ function renderAhaWorkspace(input, live = false) {
     ['overview', `装配方案 (${run.solutions?.length ?? 0})`],
     ['facts', `事实账本 (${run.facts?.length ?? 0})`],
     ['board', `观点板 (${run.board?.points?.filter(p => p.status === 'active').length ?? 0})`],
-    ['rejected', `淘汰方向 (${run.rejected?.length ?? 0})`]
+    ['rejected', `淘汰方向 (${run.rejected?.length ?? 0})`],
+    ['prompt', `推演 Prompt`]
   ];
   const content = activeTab === 'overview' ? renderOverview(run)
     : activeTab === 'facts' ? renderFacts(run)
     : activeTab === 'board' ? renderBoard(run)
     : activeTab === 'rejected' ? renderRejected(run)
+    : activeTab === 'prompt' ? renderExplorePromptTab(run)
     : renderRounds(run, live);
   const progress = run.state === 'complete' && !live ? 100 : Math.min(100, Math.max(8, ((run.currentRound || run.rounds || 1) / run.maxRounds) * 100));
   const stateLabel = live || run.state === 'active' ? '推演探索中' : run.state === 'complete' ? '推演已结晶' : run.state === 'cancelled' ? '已停止' : run.state === 'failed' ? '未完成' : run.state;
-  return `<section class="aha-workbench ${live ? 'live' : ''}" data-aha-workbench="${escapeHtml(run.id)}">
-    <div class="aha-hero">
-      <div>
-        <div class="aha-eyebrow"><span class="aha-glyph">✦</span>Aha 深度多视角探索 · ${escapeHtml(stateLabel)}</div>
-        <h3>${escapeHtml(run.problem || '正在推演机制难题')}</h3>
-        <p>${run.currentRound || run.rounds || 1} / ${run.maxRounds} 轮 · ${run.board?.points?.filter(point => point.status === 'active').length ?? 0} 个有效观点 · ${run.facts.length} 条事实 · 8 个创意席位并发</p>
+  const heroDetailsId = `hero-prompt-${run.id}`;
+  const isHeroPromptOpen = openDetails.has(heroDetailsId);
+  const fullPromptText = formatExplorePrompt(run);
+  const promptChars = fullPromptText.length;
+  const promptSizeLabel = promptChars > 1000 ? `约 ${(promptChars / 1000).toFixed(1)}k 字符` : `${promptChars} 字符`;
+
+  return `<section class="varina-workbench aha-workbench ${live ? 'live' : ''}" data-aha-workbench="${escapeHtml(run.id)}">
+    <div class="varina-hero aha-hero">
+      <div class="varina-hero-header">
+        <div>
+          <div class="varina-eyebrow aha-eyebrow"><span class="varina-glyph aha-glyph">✦</span>Varina 深度多视角探索 · ${escapeHtml(stateLabel)}</div>
+          <h3>${escapeHtml(run.problem || '正在推演机制难题')}</h3>
+          <p>${run.currentRound || run.rounds || 1} / ${run.maxRounds} 轮 · ${run.board?.points?.filter(point => point.status === 'active').length ?? 0} 个有效观点 · ${run.facts.length} 条事实 · 8 个创意席位并发</p>
+        </div>
+        <div class="varina-round-badge aha-round-badge">
+          <strong>${run.currentRound || run.rounds || 1}</strong>
+          <span>ROUND</span>
+        </div>
       </div>
-      <div class="aha-round-badge">
-        <strong>${run.currentRound || run.rounds || 1}</strong>
-        <span>ROUND</span>
-      </div>
+      <details class="varina-hero-prompt-details" data-details-id="${escapeHtml(heroDetailsId)}" ${isHeroPromptOpen ? 'open' : ''}>
+        <summary class="varina-hero-prompt-summary" title="点击展开/折叠完整拼接推演 Prompt">
+          <div class="varina-hero-prompt-title">
+            <span class="varina-hero-prompt-icon">📜</span>
+            <span class="varina-hero-prompt-title-text">完整推演 Prompt (拼接 System Prompt / 约束 / 冻结数据包)</span>
+            <span class="varina-hero-prompt-badge">${promptSizeLabel}</span>
+          </div>
+          <span class="varina-hero-prompt-arrow">▾</span>
+        </summary>
+        <div class="varina-hero-prompt-body">
+          <div class="varina-hero-prompt-toolbar">
+            <span class="varina-hero-prompt-hint">所有席位推演时读取此一致冻结包，确保 8 席位公平发散</span>
+            <button type="button" class="varina-copy-prompt-btn" data-copy-hero-prompt="${escapeHtml(run.id)}" title="复制完整 Prompt 到剪贴板">
+              <span>📋</span> 复制完整 Prompt
+            </button>
+          </div>
+          <pre class="varina-hero-prompt-pre" data-scroll-id="scroll-hero-prompt-${escapeHtml(run.id)}">${escapeHtml(fullPromptText)}</pre>
+        </div>
+      </details>
     </div>
-    <div class="aha-progress"><i style="width:${progress}%"></i></div>
-    <nav class="aha-tabs">${tabs.map(([id, label]) => `<button class="${activeTab === id ? 'active' : ''}" data-aha-tab="${id}" data-run-id="${escapeHtml(run.id)}">${label}</button>`).join('')}</nav>
-    <div class="aha-content">${content}</div>
+    <div class="varina-progress aha-progress"><i style="width:${progress}%"></i></div>
+    <nav class="varina-tabs aha-tabs">${tabs.map(([id, label]) => `<button class="${activeTab === id ? 'active' : ''}" data-aha-tab="${id}" data-run-id="${escapeHtml(run.id)}">${label}</button>`).join('')}</nav>
+    <div class="varina-content aha-content">${content}</div>
   </section>`;
 }
 
@@ -369,14 +772,90 @@ function getToolBadge(toolName = '') {
   if (lower === 'read') return { badgeClass: 'tool-badge-read', badgeText: 'READ' };
   if (lower === 'edit') return { badgeClass: 'tool-badge-edit', badgeText: 'EDIT' };
   if (lower === 'write') return { badgeClass: 'tool-badge-write', badgeText: 'WRITE' };
+  if (lower === 'initproject') return { badgeClass: 'tool-badge-write', badgeText: 'VARINA INIT' };
   if (lower === 'grep' || lower === 'glob') return { badgeClass: 'tool-badge-search', badgeText: 'SEARCH' };
-  if (lower === 'exploredesign') return { badgeClass: 'tool-badge-explore', badgeText: 'AHA EXPLORE' };
+  if (lower === 'exploredesign') return { badgeClass: 'tool-badge-explore', badgeText: 'VARINA EXPLORE' };
   if (lower.includes('backup')) return { badgeClass: 'tool-badge-backup', badgeText: 'BACKUP' };
   return { badgeClass: 'tool-badge-generic', badgeText: 'TOOL' };
 }
 
-function renderThinkingStep(step) {
+function saveChildScrollPositions(target) {
+  if (!target || !state.scrollCache) return;
+  const elements = target.querySelectorAll('[data-scroll-id]');
+  for (const el of elements) {
+    const id = el.dataset.scrollId;
+    if (id) {
+      if (el.scrollTop > 0 || el.scrollLeft > 0) {
+        state.scrollCache.set(id, { top: el.scrollTop, left: el.scrollLeft });
+      }
+    }
+  }
+}
+
+function restoreChildScrollPositions(target) {
+  if (!target || !state.scrollCache || state.scrollCache.size === 0) return;
+  const elements = target.querySelectorAll('[data-scroll-id]');
+  for (const el of elements) {
+    const id = el.dataset.scrollId;
+    if (id && state.scrollCache.has(id)) {
+      const pos = state.scrollCache.get(id);
+      if (typeof pos?.top === 'number') el.scrollTop = pos.top;
+      if (typeof pos?.left === 'number') el.scrollLeft = pos.left;
+    }
+  }
+}
+
+function updateThinkingStepInPlace(thinkEl, step) {
   const isRunning = step.status === 'running';
+  thinkEl.className = `thinking-block ${isRunning ? 'running' : 'completed'}`;
+
+  const titleEl = thinkEl.querySelector('.thinking-title');
+  if (titleEl) {
+    let durationLabel = '已深度思考';
+    if (isRunning) durationLabel = '思考中…';
+    else if (step.duration_ms) durationLabel = `用时 ${Math.max(1, Math.round(step.duration_ms / 1000))} 秒`;
+
+    titleEl.innerHTML = `
+      ${isRunning ? '<span class="thinking-pulse-dot"></span>' : '<span class="thinking-icon">💭</span>'}
+      <span class="thinking-label">${escapeHtml(durationLabel)}</span>
+    `;
+  }
+
+  const chevronEl = thinkEl.querySelector('.thinking-chevron');
+  if (chevronEl) {
+    chevronEl.textContent = thinkEl.open ? '▾' : '›';
+  }
+
+  const bodyEl = thinkEl.querySelector('.thinking-body');
+  if (bodyEl) {
+    const isAtBottom = (bodyEl.scrollHeight - bodyEl.scrollTop - bodyEl.clientHeight) < 25;
+    const prevScrollTop = bodyEl.scrollTop;
+    bodyEl.textContent = step.content || (isRunning ? '正在分析上下文，规划后续操作…' : '思考已完成');
+    if (isAtBottom && isRunning) {
+      bodyEl.scrollTop = bodyEl.scrollHeight;
+    } else {
+      bodyEl.scrollTop = prevScrollTop;
+    }
+    if (bodyEl.dataset.scrollId) {
+      if (bodyEl.scrollTop > 0) state.scrollCache.set(bodyEl.dataset.scrollId, { top: bodyEl.scrollTop, left: 0 });
+      else state.scrollCache.delete(bodyEl.dataset.scrollId);
+    }
+  }
+
+  const target = $('#messages');
+  if (target) {
+    const distance = target.scrollHeight - target.scrollTop - target.clientHeight;
+    if (!state.userScrolledUp && distance < 80) {
+      target.scrollTop = target.scrollHeight;
+    }
+    updateScrollBottomBtn();
+  }
+}
+
+function renderThinkingStep(step, openDetails = new Set()) {
+  const isRunning = step.status === 'running';
+  const stepId = step.id || `step-think-${step.iteration ?? 0}`;
+  const isOpen = isRunning || openDetails.has(stepId);
   const content = step.content || (isRunning ? '正在分析上下文，规划后续操作…' : '思考已完成');
   let durationLabel = '已深度思考';
   if (isRunning) {
@@ -386,21 +865,22 @@ function renderThinkingStep(step) {
     durationLabel = `用时 ${sec} 秒`;
   }
   return `
-    <details class="thinking-block ${isRunning ? 'running' : 'completed'}" ${isRunning ? 'open' : ''}>
+    <details class="thinking-block ${isRunning ? 'running' : 'completed'}" data-details-id="${escapeHtml(stepId)}" ${isOpen ? 'open' : ''}>
       <summary class="thinking-summary" title="${isRunning ? '正在思考中' : '点击展开/折叠思考过程'}">
         <div class="thinking-title">
           ${isRunning ? '<span class="thinking-pulse-dot"></span>' : '<span class="thinking-icon">💭</span>'}
           <span class="thinking-label">${escapeHtml(durationLabel)}</span>
         </div>
-        <span class="thinking-chevron">${isRunning ? '▾' : '›'}</span>
+        <span class="thinking-chevron">${isOpen ? '▾' : '›'}</span>
       </summary>
-      <div class="thinking-body">${escapeHtml(content)}</div>
+      <div class="thinking-body" data-scroll-id="scroll-think-${escapeHtml(stepId)}">${escapeHtml(content)}</div>
     </details>
   `;
 }
 
-function renderToolStep(step) {
+function renderToolStep(step, openDetails = new Set()) {
   const toolName = step.name || 'Tool';
+  const stepId = step.id || `step-tool-${step.iteration ?? 0}`;
   const { badgeClass, badgeText } = getToolBadge(toolName);
   const isRunning = step.status === 'running';
   const isFailed = step.status === 'failed' || step.ok === false;
@@ -424,7 +904,7 @@ function renderToolStep(step) {
   let bodyContent = '';
   if (toolName === 'Edit' && (input.old_string !== undefined || input.new_string !== undefined)) {
     bodyContent = `
-      <div class="diff-container">
+      <div class="diff-container" data-scroll-id="scroll-diff-${escapeHtml(stepId)}">
         <div class="diff-header">目标文件：<code>${escapeHtml(input.file_path || '')}</code></div>
         <div class="diff-line diff-del"><span class="diff-sign">-</span><pre>${escapeHtml(input.old_string ?? '')}</pre></div>
         <div class="diff-line diff-add"><span class="diff-sign">+</span><pre>${escapeHtml(input.new_string ?? '')}</pre></div>
@@ -434,23 +914,25 @@ function renderToolStep(step) {
     const range = input.start_line ? ` (第 ${input.start_line} - ${input.end_line ?? '末尾'} 行)` : '';
     const text = step.result?.content;
     const lineCount = step.result?.linesCount || (text ? (text.match(/\n/g) || []).length + 1 : null);
+    const readDetailsId = `${stepId}-read`;
     bodyContent = `
       <div class="tool-detail-row">读取文件：<code>${escapeHtml(input.file_path || '')}</code>${escapeHtml(range)}</div>
       ${text ? `
-        <details class="tool-expand-details">
+        <details class="tool-expand-details" data-details-id="${escapeHtml(readDetailsId)}" ${openDetails.has(readDetailsId) ? 'open' : ''}>
           <summary>查看读取内容 ${lineCount ? `(${lineCount} 行)` : ''}</summary>
-          <pre class="tool-content-pre">${escapeHtml(text.slice(0, 3000))}${text.length > 3000 ? '\n\n⋯ (超出 3000 字符部分已截断)' : ''}</pre>
+          <pre class="tool-content-pre" data-scroll-id="scroll-read-${escapeHtml(readDetailsId)}">${escapeHtml(text.slice(0, 3000))}${text.length > 3000 ? '\n\n⋯ (超出 3000 字符部分已截断)' : ''}</pre>
         </details>
       ` : ''}
     `;
   } else if (toolName === 'Write') {
     const content = input.content ?? '';
+    const writeDetailsId = `${stepId}-write`;
     bodyContent = `
       <div class="tool-detail-row">写入文件：<code>${escapeHtml(input.file_path || '')}</code> (${content.length} 字符)</div>
       ${content ? `
-        <details class="tool-expand-details">
+        <details class="tool-expand-details" data-details-id="${escapeHtml(writeDetailsId)}" ${openDetails.has(writeDetailsId) ? 'open' : ''}>
           <summary>查看写入内容预览</summary>
-          <pre class="tool-content-pre">${escapeHtml(content.slice(0, 3000))}${content.length > 3000 ? '\n\n⋯ (超出 3000 字符部分已截断)' : ''}</pre>
+          <pre class="tool-content-pre" data-scroll-id="scroll-write-${escapeHtml(writeDetailsId)}">${escapeHtml(content.slice(0, 3000))}${content.length > 3000 ? '\n\n⋯ (超出 3000 字符部分已截断)' : ''}</pre>
         </details>
       ` : ''}
     `;
@@ -498,61 +980,114 @@ function renderToolStep(step) {
 
 function renderMessages() {
   const target = $('#messages');
-  const wasNearBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 120;
+  if (!target) return;
+  const prevScrollTop = target.scrollTop;
+  const distance = target.scrollHeight - target.scrollTop - target.clientHeight;
+  const shouldAutoScroll = state.forceScrollToBottom || (!state.userScrolledUp && distance < 80);
+  state.forceScrollToBottom = false;
+
+  const openDetails = new Set(
+    [...target.querySelectorAll('details[open]')].map(el => el.dataset.detailsId).filter(Boolean)
+  );
+
+  saveChildScrollPositions(target);
+
   const messages = state.session?.messages ?? [];
-  const runs = state.session?.aha_runs ?? [];
+  const runs = state.session?.varina_runs ?? state.session?.aha_runs ?? [];
   const runMap = new Map(runs.map(run => [run.run_id, run]));
   const linked = new Set();
+  const compaction = state.session?.compaction;
+  let compactionDividerRendered = false;
+
   let markup = messages.map((message, index) => {
+    let prefix = '';
+    if (compaction?.summary && !compactionDividerRendered && (message.turn > compaction.last_compacted_turn)) {
+      compactionDividerRendered = true;
+      prefix = `
+        <div class="compaction-divider">
+          <div class="compaction-badge">
+            <span class="compaction-icon">⚡</span>
+            <span>历史上下文已自动压缩归档（第 1 ~ ${compaction.last_compacted_turn} 轮）</span>
+            ${compaction.chars_before ? `<span class="compaction-stats">${compaction.tokens_before ? `约 ${(compaction.tokens_before / 1000).toFixed(0)}k tokens ➔ ${(compaction.tokens_after / 1000).toFixed(1)}k tokens` : `${compaction.chars_before} 字符 ➔ ${compaction.chars_after} 字符`}</span>` : ''}
+          </div>
+          <details class="compaction-details" data-details-id="compaction-summary" ${openDetails.has('compaction-summary') ? 'open' : ''}>
+            <summary>展开查看交接摘要 (Handoff Summary)</summary>
+            <div class="compaction-summary-body markdown-body" data-scroll-id="scroll-compaction-summary">${renderMarkdown(compaction.summary)}</div>
+          </details>
+        </div>
+      `;
+    }
+
     if (message.role === 'user') {
-      const isExplicitAha = message.content.trim().startsWith('/aha');
+      const isExplicitAha = message.content.trim().startsWith('/varina') || message.content.trim().startsWith('/aha');
       const clean = isExplicitAha ? message.content.trim().replace(/^\/aha\s*/i, '') : message.content;
-      return `
+      return `${prefix}
         <article class="message user">
-          <div class="message-body">${escapeHtml(clean || message.content)}${isExplicitAha ? '<span class="aha-user-tag">✦ Aha 探索</span>' : ''}</div>
+          <div class="message-body">${escapeHtml(clean || message.content)}${isExplicitAha ? '<span class="varina-user-tag aha-user-tag">✦ Varina 探索</span>' : ''}</div>
         </article>
       `;
     }
-    const run = message.aha_run_id ? runMap.get(message.aha_run_id) : null;
+    const run = (message.varina_run_id || message.aha_run_id) ? runMap.get((message.varina_run_id || message.aha_run_id)) : null;
     if (run) linked.add(run.run_id);
     let stepsMarkup = '';
     if (Array.isArray(message.steps)) {
       stepsMarkup = message.steps.map(step => {
-        if (step.type === 'thinking') return renderThinkingStep(step);
-        if (step.type === 'tool') return renderToolStep(step);
+        if (step.type === 'thinking') return renderThinkingStep(step, openDetails);
+        if (step.type === 'tool') return renderToolStep(step, openDetails);
         return '';
       }).join('');
     }
-    const ahaMarkup = run ? renderAhaWorkspace(viewRun(run)) : '';
+    const ahaMarkup = run ? renderAhaWorkspace(viewRun(run), false, openDetails) : '';
     const bodyMarkup = message.content ? `
       <article class="message assistant ${message.partial ? 'partial' : ''}">
         <div class="message-body markdown-body">${renderMarkdown(message.content)}</div>
-        ${message.confirmation ? `<div class="confirm-card"><p>${escapeHtml(message.confirmation.question)}</p><button class="primary" data-confirm="${index}">启动全新 Aha</button></div>` : ''}
+        ${message.confirmation ? `<div class="confirm-card"><p>${escapeHtml(message.confirmation.question)}</p><button class="primary" data-confirm="${index}">启动全新 Varina</button></div>` : ''}
       </article>
     ` : '';
-    return `${stepsMarkup}${ahaMarkup}${bodyMarkup}`;
+    return `${prefix}${stepsMarkup}${ahaMarkup}${bodyMarkup}`;
   }).join('');
 
+  if (compaction?.summary && !compactionDividerRendered && messages.length > 0) {
+    markup += `
+      <div class="compaction-divider">
+        <div class="compaction-badge">
+          <span class="compaction-icon">⚡</span>
+          <span>历史上下文已自动压缩归档（第 1 ~ ${compaction.last_compacted_turn} 轮）</span>
+          ${compaction.chars_before ? `<span class="compaction-stats">${compaction.tokens_before ? `约 ${(compaction.tokens_before / 1000).toFixed(0)}k tokens ➔ ${(compaction.tokens_after / 1000).toFixed(1)}k tokens` : `${compaction.chars_before} 字符 ➔ ${compaction.chars_after} 字符`}</span>` : ''}
+        </div>
+        <details class="compaction-details" data-details-id="compaction-summary" ${openDetails.has('compaction-summary') ? 'open' : ''}>
+          <summary>展开查看交接摘要 (Handoff Summary)</summary>
+          <div class="compaction-summary-body markdown-body" data-scroll-id="scroll-compaction-summary">${renderMarkdown(compaction.summary)}</div>
+        </details>
+      </div>
+    `;
+  }
+
   for (const run of runs.filter(item => !linked.has(item.run_id) && item.state !== 'active')) {
-    markup += renderAhaWorkspace(viewRun(run));
+    markup += renderAhaWorkspace(viewRun(run), false, openDetails);
   }
 
   // Active turn steps (streaming live before final assistant message is created)
   if (state.session?.status === 'running' && state.session?.active_turn?.steps?.length) {
     markup += state.session.active_turn.steps.map(step => {
-      if (step.type === 'thinking') return renderThinkingStep(step);
-      if (step.type === 'tool') return renderToolStep(step);
+      if (step.type === 'thinking') return renderThinkingStep(step, openDetails);
+      if (step.type === 'tool') return renderToolStep(step, openDetails);
       return '';
     }).join('');
   }
 
-  if (state.session?.active_aha_runtime) {
-    markup += renderAhaWorkspace(viewRun(runMap.get(state.session.active_aha_runtime.run_id), state.session.active_aha_runtime), true);
+  if ((state.session?.active_varina_runtime || state.session?.active_aha_runtime)) {
+    markup += renderAhaWorkspace(viewRun(runMap.get((state.session.active_varina_runtime || state.session.active_aha_runtime).run_id), (state.session.active_varina_runtime || state.session.active_aha_runtime)), true, openDetails);
   }
 
   target.innerHTML = messages.length || markup ? markup : emptyState();
+  restoreChildScrollPositions(target);
+  if (shouldAutoScroll) {
+    target.scrollTop = target.scrollHeight;
+  } else if (target.scrollTop !== prevScrollTop) {
+    target.scrollTop = prevScrollTop;
+  }
   updateScrollBottomBtn();
-  if (wasNearBottom || state.session?.status === 'running') requestAnimationFrame(() => { target.scrollTop = target.scrollHeight; });
 }
 
 function renderActivity() {
@@ -564,9 +1099,14 @@ function renderActivity() {
 function updateScrollBottomBtn() {
   const target = $('#messages');
   const btn = $('#scroll-bottom-btn');
-  if (!target || !btn) return;
+  if (!target) return;
   const distance = target.scrollHeight - target.scrollTop - target.clientHeight;
-  btn.hidden = distance < 180;
+  if (btn) btn.hidden = distance < 120;
+  if (distance > 60) {
+    state.userScrolledUp = true;
+  } else if (distance < 20) {
+    state.userScrolledUp = false;
+  }
 }
 
 function render() {
@@ -577,7 +1117,7 @@ function render() {
   $('#workspace-button').title = workspace ?? '选择工作目录';
   renderMessages();
   renderActivity();
-  updateAhaToggle();
+  updateVarinaToggle();
   updateComposerModel();
   setRunning(state.session?.status === 'running', state.session?.status === 'running' ? '处理中' : state.session?.status === 'failed' ? '上轮失败' : '就绪');
 }
@@ -618,7 +1158,14 @@ function connectEvents(sessionId) {
         if (data.duration_ms) step.duration_ms = data.duration_ms;
         if (data.content !== undefined) step.content = data.content;
       }
-      renderMessages();
+      const stepId = step.id || `step-think-${step.iteration ?? 0}`;
+      const target = $('#messages');
+      const thinkEl = target?.querySelector(`details.thinking-block[data-details-id="${stepId}"]`);
+      if (thinkEl) {
+        updateThinkingStepInPlace(thinkEl, step);
+      } else {
+        renderMessages();
+      }
     } else if (data.event === 'tool_call') {
       let step = steps.find(s => s.id === data.tool_call_id);
       if (!step) {
@@ -628,6 +1175,22 @@ function connectEvents(sessionId) {
         step.name = data.name;
         if (data.input !== undefined) step.input = data.input;
         step.status = 'running';
+      }
+      if (data.name === 'ExploreDesign' && !(state.session.active_varina_runtime || state.session.active_aha_runtime)) {
+        const runtime = {
+          run_id: data.tool_call_id || `varina-${Date.now()}`,
+          problem: data.input?.problem || '正在启动 Varina 深度多视角探索…',
+          hard_constraints: data.input?.constraints || [],
+          status: 'active',
+          current_round: 1,
+          max_rounds: 5,
+          current_board: { points: [] },
+          fact_ledger: [],
+          round_records: [],
+          seat_responses: []
+        };
+        state.session.active_varina_runtime = runtime;
+        state.session.active_aha_runtime = runtime;
       }
       renderMessages();
     } else if (data.event === 'tool_result') {
@@ -642,10 +1205,20 @@ function connectEvents(sessionId) {
         if (data.error !== undefined) step.error = data.error;
       }
       renderMessages();
+    } else if (data.event === 'context_compacted') {
+      if (data.phase === 'pre_turn') {
+        state.session.compaction = {
+          last_compacted_turn: data.last_compacted_turn,
+          summary: data.summary,
+          chars_before: data.chars_before,
+          chars_after: data.chars_after
+        };
+        renderMessages();
+      }
     } else if (data.event === 'agent_done') {
       delete state.session.active_turn;
       void refreshSession(sessionId);
-    } else if (data.phase?.startsWith('aha_')) {
+    } else if (data.phase?.startsWith('varina_') || data.phase?.startsWith('aha_')) {
       void refreshSession(sessionId);
     }
   };
@@ -653,9 +1226,18 @@ function connectEvents(sessionId) {
 }
 
 async function openSession(sessionId) {
+  state.userScrolledUp = false;
+  state.forceScrollToBottom = true;
   state.session = await api(`/api/agent/sessions/${sessionId}`);
   if (state.session?.mode) {
     state.activeMode = state.session.mode;
+  }
+  if (state.session?.workspace_root) {
+    const key = normalizePath(state.session.workspace_root).toLowerCase();
+    if (state.collapsedFolders.has(key)) {
+      state.collapsedFolders.delete(key);
+      saveCollapsedFolders(state.collapsedFolders);
+    }
   }
   state.activities = [];
   connectEvents(sessionId);
@@ -746,19 +1328,29 @@ async function createSession() {
 }
 
 async function refreshSession(sessionId) {
-  if (state.polling) return;
+  if (state.polling) {
+    state.pendingRefresh = true;
+    return;
+  }
   state.polling = true;
   try {
     const session = await api(`/api/agent/sessions/${sessionId}`);
     if (state.session?.session_id === sessionId) { state.session = session; render(); }
     await loadSessions();
-  } finally { state.polling = false; }
+  } finally {
+    state.polling = false;
+    if (state.pendingRefresh) {
+      state.pendingRefresh = false;
+      void refreshSession(sessionId);
+    }
+  }
 }
 
 async function sendMessage(message) {
-  if (!message.trim()) return;
+  const trimmed = message.trim();
+  if (!trimmed) return;
   if (!state.session) {
-    state.pendingMessage = message.trim();
+    state.pendingMessage = trimmed;
     await openFolderDialog();
     return;
   }
@@ -766,14 +1358,19 @@ async function sendMessage(message) {
   const before = state.session.messages.length;
   $('#message-input').value = '';
   state.activities = ['正在理解你的请求…'];
-  state.session.messages.push({ role: 'user', content: message, created_at: new Date().toISOString() });
+  // Slash commands such as /init and /init --refresh must reach the Agent unchanged.
+  // The Varina toggle only adds an explicit exploration prefix to ordinary messages.
+  const outboundMessage = (state.ahaEnabled && !trimmed.startsWith('/')) ? `/varina ${trimmed}` : trimmed;
+  state.session.messages.push({ role: 'user', content: outboundMessage, created_at: new Date().toISOString() });
   state.session.status = 'running';
   state.session.active_turn = { turn: (state.session.current_turn || 0) + 1, steps: [] };
+  state.userScrolledUp = false;
+  state.forceScrollToBottom = true;
   render();
   await api(`/api/agent/sessions/${sessionId}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, enable_aha: state.ahaEnabled })
+    body: JSON.stringify({ message: outboundMessage, enable_varina: state.ahaEnabled, enable_aha: state.ahaEnabled })
   });
   for (let attempt = 0; attempt < 1800; attempt++) {
     await new Promise(resolve => setTimeout(resolve, 700));
@@ -1031,7 +1628,7 @@ function renderSettingsModalContent() {
         <div class="role-assign-grid">
           ${roleAssignHtml}
         </div>
-        <h4 style="margin:10px 0 0;font-size:12px;color:var(--ink)">Aha 8 席位推演分配</h4>
+        <h4 style="margin:10px 0 0;font-size:12px;color:var(--ink)">Varina 8 席位推演分配</h4>
         <div class="role-assign-grid">
           ${seatsHtml}
         </div>
@@ -1242,6 +1839,18 @@ $('#session-list').addEventListener('click', event => {
     deleteSession(deleteBtn.dataset.deleteSession).catch(error => toast(error.message));
     return;
   }
+  const createInFolderBtn = event.target.closest('[data-create-in-folder]');
+  if (createInFolderBtn) {
+    event.stopPropagation();
+    createSessionInFolder(createInFolderBtn.dataset.createInFolder).catch(error => toast(error.message));
+    return;
+  }
+  const folderToggle = event.target.closest('[data-toggle-folder]');
+  if (folderToggle) {
+    event.stopPropagation();
+    toggleFolderCollapse(folderToggle.dataset.toggleFolder);
+    return;
+  }
   const button = event.target.closest('[data-session]');
   if (button) openSession(button.dataset.session).catch(error => toast(error.message));
 });
@@ -1250,19 +1859,55 @@ $('#messages').addEventListener('click', event => {
   if (suggestion) { $('#message-input').value = suggestion.dataset.suggestion; $('#message-input').focus(); }
   if (event.target.closest('[data-open-workspace]')) openFolderDialog().catch(error => toast(error.message));
   const confirmation = event.target.closest('[data-confirm]');
-  if (confirmation) { const message = state.session.messages[Number(confirmation.dataset.confirm)]; sendMessage(`/aha ${message.confirmation.original_problem}`).catch(error => toast(error.message)); }
+  if (confirmation) { const message = state.session.messages[Number(confirmation.dataset.confirm)]; sendMessage(`/varina ${message.confirmation.original_problem}`).catch(error => toast(error.message)); }
+  const copyHeroPromptBtn = event.target.closest('[data-copy-hero-prompt]');
+  if (copyHeroPromptBtn) {
+    event.stopPropagation();
+    copyHeroPrompt(copyHeroPromptBtn.dataset.copyHeroPrompt);
+    return;
+  }
   const tab = event.target.closest('[data-aha-tab]');
-  if (tab) { state.ahaTabs[tab.dataset.runId] = tab.dataset.ahaTab; renderMessages(); }
+  if (tab) {
+    state.ahaTabs[tab.dataset.runId] = tab.dataset.ahaTab;
+    state.userScrolledUp = true;
+    renderMessages();
+  }
 });
+$('#messages')?.addEventListener('scroll', event => {
+  const el = event.target;
+  if (el && el !== $('#messages') && el.dataset?.scrollId) {
+    if (el.scrollTop > 0 || el.scrollLeft > 0) {
+      state.scrollCache.set(el.dataset.scrollId, { top: el.scrollTop, left: el.scrollLeft });
+    } else {
+      state.scrollCache.delete(el.dataset.scrollId);
+    }
+  }
+}, { capture: true, passive: true });
 $('#messages')?.addEventListener('scroll', updateScrollBottomBtn, { passive: true });
+$('#messages')?.addEventListener('wheel', event => {
+  const inCard = event.target.closest?.('[data-scroll-id], pre, .thinking-body, .tool-card, .varina-workbench, .diff-container, details[open]');
+  if (inCard || event.deltaY < 0) {
+    state.userScrolledUp = true;
+  }
+}, { passive: true });
 $('#scroll-bottom-btn')?.addEventListener('click', () => {
   const target = $('#messages');
+  state.userScrolledUp = false;
   if (target) target.scrollTo({ top: target.scrollHeight, behavior: 'smooth' });
+  const btn = $('#scroll-bottom-btn');
+  if (btn) btn.hidden = true;
 });
 $('#cancel-turn').addEventListener('click', async () => {
   if (!state.session) return;
   try { await api(`/api/agent/sessions/${state.session.session_id}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); toast('正在停止，已完成的中间结果会保留'); }
   catch (error) { toast(error.message); }
+});
+
+window.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && state.session?.status === 'running') {
+    event.preventDefault();
+    $('#cancel-turn')?.click();
+  }
 });
 
 $('#open-settings')?.addEventListener('click', () => openSettingsModal());
@@ -1291,9 +1936,9 @@ $('#new-session-dialog')?.addEventListener('click', event => {
 
 $('#aha-toggle')?.addEventListener('click', () => {
   state.ahaEnabled = !state.ahaEnabled;
-  localStorage.setItem('aha_enabled', String(state.ahaEnabled));
-  updateAhaToggle();
-  toast(`Aha 深度探索已${state.ahaEnabled ? '开启 (遇到机制问题将自动展开推演)' : '关闭 (纯对话与文件读写，不启动推演)'}`);
+  localStorage.setItem('varina_enabled', String(state.ahaEnabled));
+  updateVarinaToggle();
+  toast(`Varina 深度探索已${state.ahaEnabled ? '开启 (将自动启动 8 席位多视角推演)' : '关闭 (仅日常对话与文件读写)'}`);
 });
 
 $('#settings-body')?.addEventListener('click', event => {
@@ -1346,7 +1991,7 @@ $('#settings-body')?.addEventListener('click', event => {
 try {
   try { state.config = await api('/api/config'); } catch {}
   updateComposerModel();
-  updateAhaToggle();
+  updateVarinaToggle();
   await loadSessions();
   const fromHash = location.hash.match(/^#(session-[A-Za-z0-9-]+)$/)?.[1];
   if (fromHash && state.sessions.some(session => session.session_id === fromHash)) {

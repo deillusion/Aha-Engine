@@ -1,4 +1,4 @@
-# Aha-Grounded architecture
+# Varina-Grounded architecture
 
 主产品是 Agent，不是 workflow。依赖方向如下：
 
@@ -12,7 +12,7 @@ AgentService ── SessionStore
 AgentSession (conversation + bounded tool loop)
        |                    \
        v                     v
-CodebaseHost             AhaGateController
+CodebaseHost             VarinaGateController
        |                     |
        v                     v
 NodeFsHost             ExploreDesignEngine
@@ -44,7 +44,7 @@ NodeFsHost             ExploreDesignEngine
 - 单条命中行 500 字符（Grep 侧裁剪，返回 `line_chars` / `truncated`）。
 - 单条结果 `Grep` 20,000 字符、其余 50,000 字符；单轮合计 200,000 字符。
 - 超限不是截断而是落盘 + 2,000 字符预览，落盘走 `Host.persistToolResult`，因此 `NodeFsHost` 与 `MemoryHost` 行为一致。
-- 落盘目录位于工作区的 `.aha` 下，`listFiles` 默认跳过，既避免自己再被检索命中，又让模型能用 `Read` 取回原文。
+- 落盘目录位于工作区的 `.varina` 下，运行时数据位于 `.varina/data`，`listFiles` / `grep` 默认跳过 `.varina`，既避免自己再被检索命中，又让模型能用 `Read` 取回原文。
 
 ## Retry policy
 
@@ -59,12 +59,12 @@ NodeFsHost             ExploreDesignEngine
 - `expectedHash` 防止读取后被外部修改的文件遭覆盖。
 - 覆盖前先备份原始字节；备份索引和目标写入都使用临时文件 + rename。
 - `grep` 默认把命中行裁到 500 字符并标注 `line_chars`；单文件大小上限之外，还限制单行宽度，避免“整个文件就是一行”的数据文件一次命中就搬走兆字节。
-- `persistToolResult` 是超限结果的落盘出口，写入 `.aha/tool-results/`（模型可用 `Read` 取回，`listFiles` 不会再检索到）。
+- `persistToolResult` 是超限结果的落盘出口，写入 `.varina/tool-results/`（模型可用 `Read` 取回，`listFiles` 不会再检索到）。
 - 核心逻辑不调用 shell、Git 或 native grep。
 
 `MemoryHost` 实现相同端口，用于离线测试与可重复模拟。
 
-## Aha engine
+## Varina engine
 
 `ExploreDesignEngine` 是主 Agent 的一个重型工具，不是顶层交互循环。
 
@@ -76,10 +76,10 @@ Runner 最多执行五轮。只有连续两轮 ADD=0、MERGE=0 且不存在阻�
 
 ## Persistence and recovery
 
-会话 JSON 是完整审计记录。Aha 每轮 checkpoint 写入 `active_aha_runtime`；正常 handoff 后沉淀为 `AhaRunRecord` 并移除运行时容器。进程重启遇到 `running` 会话时将其标记为 `interrupted`，避免自动重复调用。
+会话 JSON 是完整审计记录。Varina 每轮 checkpoint 写入 `active_varina_runtime`；正常 handoff 后沉淀为 `VarinaRunRecord` 并移除运行时容器。进程重启遇到 `running` 会话时将其标记为 `interrupted`，避免自动重复调用。
 
 模型凭证只存在于运行期配置对象。`AgentSessionStore`、会话导出和模型调用审计均不保存 provider payload 或 API Key。
 
 ## Compatibility boundary
 
-`src/engine.mjs` 与 `src/application/RunService` 是旧多方案实验工作流的兼容路径，保留既有测试和历史记录读取能力。Web 主界面、CLI 和 MCP `aha_chat` 不依赖它。兼容 MCP 工具名 `aha_design_architecture` 也已转接新 Agent，而非旧 RunService。
+`src/engine.mjs` 与 `src/application/RunService` 是旧多方案实验工作流的兼容路径，保留既有测试和历史记录读取能力。Web 主界面、CLI 和 MCP `varina_chat` (及兼容别名 `aha_chat`) 不依赖它。MCP 工具名 `varina_design_architecture` (及兼容别名 `aha_design_architecture`) 也已转接新 Agent，而非旧 RunService。

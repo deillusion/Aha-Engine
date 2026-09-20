@@ -18,7 +18,7 @@ export class AgentTurnConflictError extends Error {
 export class AgentService {
   constructor({
     root,
-    dataDir = path.join(root, 'data/sessions'),
+    dataDir = path.join(root, '.varina/data/sessions'),
     workspaceRoot = path.resolve(root, '..'),
     store = new AgentSessionStore(dataDir),
     configLoader = loadConfig,
@@ -47,8 +47,10 @@ export class AgentService {
       if (session.status === 'running') {
         session.status = 'interrupted';
         delete session.active_turn;
-        if (session.active_aha_runtime) {
-          const run = session.aha_runs.find(item => item.run_id === session.active_aha_runtime.run_id);
+        const activeRuntime = session.active_varina_runtime ?? session.active_aha_runtime;
+        if (activeRuntime) {
+          const runs = session.varina_runs ?? session.aha_runs ?? [];
+          const run = runs.find(item => item.run_id === activeRuntime.run_id);
           if (run?.state === 'active') {
             run.state = 'interrupted';
             run.stop_reason = 'process_interrupted';
@@ -138,8 +140,10 @@ export class AgentService {
       title: session.title,
       status: session.status,
       mode: session.mode,
+      workspace_root: session.workspace_root || null,
       current_turn: session.current_turn,
-      aha_runs: session.aha_runs?.length ?? 0,
+      varina_runs: (session.varina_runs ?? session.aha_runs)?.length ?? 0,
+      aha_runs: (session.varina_runs ?? session.aha_runs)?.length ?? 0,
       created_at: session.created_at,
       updated_at: session.updated_at,
       last_message: session.messages?.at(-1)?.content?.slice(0, 160) ?? ''
@@ -151,7 +155,7 @@ export class AgentService {
     return () => this.events.off(sessionId, listener);
   }
 
-  async startTurn(sessionId, message, { enable_aha } = {}) {
+  async startTurn(sessionId, message, { enable_varina, enable_aha, max_tool_iterations } = {}) {
     await this.init();
     if (this.active.has(sessionId)) throw new AgentTurnConflictError();
     const state = await this.store.get(sessionId);
@@ -170,8 +174,24 @@ export class AgentService {
           publish({ event: 'model_call', session_id: sessionId, phase: call.phase, status: call.status, model_id: call.model_id });
         }
       });
-      const agent = new AgentSession({ state, host, store: this.store, gateway, config, signal: controller.signal, onEvent: publish });
-      return agent.turn(message, { enable_aha });
+      const resolvedMaxIterations = Number(max_tool_iterations)
+        || Number(process.env.VARINA_MAX_TOOL_ITERATIONS)
+        || Number(process.env.AHA_MAX_TOOL_ITERATIONS)
+        || config?.max_tool_iterations
+        || config?.agent?.max_tool_iterations
+        || 100;
+      const agent = new AgentSession({
+        state,
+        host,
+        store: this.store,
+        gateway,
+        config,
+        signal: controller.signal,
+        onEvent: publish,
+        maxToolIterations: resolvedMaxIterations
+      });
+      const enabled = enable_varina ?? enable_aha;
+      return agent.turn(message, { enable_varina: enabled, enable_aha: enabled });
     })().catch(async error => {
       state.status = controller.signal.aborted ? 'cancelled' : 'failed';
       delete state.active_turn;

@@ -26,8 +26,8 @@ await Promise.allSettled(config.models.filter(m => !selected.length || selected.
     if (record.status === 'failed') break;
   }
 }));
-await mkdir(path.join(root, 'data/checks'), { recursive: true });
+await mkdir(path.join(root, '.varina/data/checks'), { recursive: true });
 const filename = `models-${Date.now()}.json`;
-await writeFile(path.join(root, 'data/checks', filename), JSON.stringify(results, null, 2));
-console.log(`检查记录：data/checks/${filename}`);
+await writeFile(path.join(root, '.varina/data/checks', filename), JSON.stringify(results, null, 2));
+console.log(`检查记录：.varina/data/checks/${filename}`);
 if (results.some(r => r.status !== 'passed')) process.exitCode = 1;

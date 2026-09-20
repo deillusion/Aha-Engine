@@ -15,6 +15,7 @@ yarn-debug.log*
 yarn-error.log*
 
 # 无 Git 文件备份与超限工具结果落盘（工作区内运行时数据，不是源码）
+.varina/
 .aha/
 
 # 测试目录（本地保留，不纳入 Git 版本管理）

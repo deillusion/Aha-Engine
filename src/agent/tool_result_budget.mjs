@@ -14,7 +14,11 @@ export const PERSISTED_OUTPUT_TAG = '<persisted-output>';
 export const DEFAULT_MAX_RESULT_CHARS = 50_000;
 
 /** 工具可以声明更低的上限。Grep 对标 Claude Code 的 maxResultSizeChars: 20_000。 */
-export const MAX_RESULT_CHARS_BY_TOOL = { Grep: 20_000 };
+export const MAX_RESULT_CHARS_BY_TOOL = {
+  Grep: 20_000,
+  ExploreDesign: 150_000,
+  Aha: 150_000
+};
 
 /** 单条 user 消息内所有工具结果之和的上限（一轮里 N 个工具同时命中时兜底）。 */
 export const MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 200_000;
@@ -78,9 +82,13 @@ export async function applyToolResultBudget(results, { persist, budget = MAX_TOO
   const persisted = [];
   for (const [index, item] of results.entries()) {
     if (!overLimit.has(index)) { kept.push(item); continue; }
-    const text = JSON.stringify(item);
+    const text = JSON.stringify(item, null, 2);
     const stored = await persist(`${label}-${item.id ?? index}`, text);
     persisted.push({ id: item.id ?? null, name: item.name ?? null, path: stored.filePath, bytes: stored.bytes, chars: text.length });
+    const isReasoningTool = item.name === 'ExploreDesign' || item.name === 'Aha';
+    const note = isReasoningTool
+      ? `${PERSISTED_OUTPUT_TAG} 结果过大（${text.length} 字符），完整内容已写入 persisted_path。`
+      : `${PERSISTED_OUTPUT_TAG} 结果过大（${text.length} 字符），完整内容已写入 persisted_path。需要细节时用 Read 读取该文件，不要重跑同一个检索。`;
     kept.push({
       id: item.id,
       name: item.name,
@@ -88,7 +96,7 @@ export async function applyToolResultBudget(results, { persist, budget = MAX_TOO
       persisted: true,
       persisted_path: stored.filePath,
       persisted_chars: text.length,
-      note: `${PERSISTED_OUTPUT_TAG} 结果过大（${text.length} 字符），完整内容已写入 persisted_path。需要细节时用 Read 读取该文件，不要重跑同一个检索。`,
+      note,
       preview: previewOf(text)
     });
   }

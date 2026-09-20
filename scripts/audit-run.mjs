@@ -1,7 +1,7 @@
 import { auditRun } from '../src/audit.mjs';
 import { readFile, writeFile } from 'node:fs/promises';
 const file = process.argv[2];
-if (!file) throw new Error('用法：node scripts/audit-run.mjs data/runs/<run-id>.json');
+if (!file) throw new Error('用法：node scripts/audit-run.mjs .varina/data/runs/<run-id>.json');
 const run = JSON.parse(await readFile(file, 'utf8'));
 const report = auditRun(run);
 const output = file.replace(/\.json$/, '.audit.json');

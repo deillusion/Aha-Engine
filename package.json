@@ -1,5 +1,5 @@
 {
-  "name": "aha-grounded-agent",
+  "name": "varina-grounded-agent",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env server.mjs",
     "test": "node --test tests/*.test.mjs",
-    "test:in-process": "node --test-reporter=spec --import ./tests/all.mjs",
+    "test:in-process": "node --test --test-reporter=spec tests/all.mjs",
     "test:replay": "node scripts/replay-run-failures.mjs",
     "demo": "node cli.mjs --demo",
     "run": "node --env-file-if-exists=.env cli.mjs",

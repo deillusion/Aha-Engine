@@ -4,12 +4,12 @@ import tls from 'node:tls';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 // Read-only proxy discovery. Re-evaluated for every request so switching Windows proxies
-// does not require editing the application. AHA_PROXY_URL=direct explicitly bypasses it.
+// does not require editing the application. VARINA_PROXY_URL=direct explicitly bypasses it.
 export async function proxyFor(target) {
   if (['localhost', '127.0.0.1', '[::1]'].includes(target.hostname)) return null;
   const bypass = (process.env.NO_PROXY ?? process.env.no_proxy ?? '').split(',').map(s => s.trim()).filter(Boolean);
   if (bypass.some(s => s === '*' || target.hostname === s || (s.startsWith('.') && target.hostname.endsWith(s)))) return null;
-  const explicit = process.env.AHA_PROXY_URL ?? process.env.HTTPS_PROXY ?? process.env.https_proxy ?? process.env.HTTP_PROXY ?? process.env.http_proxy;
+  const explicit = process.env.VARINA_PROXY_URL ?? process.env.AHA_PROXY_URL ?? process.env.HTTPS_PROXY ?? process.env.https_proxy ?? process.env.HTTP_PROXY ?? process.env.http_proxy;
   if (explicit) return explicit === 'direct' ? null : new URL(explicit);
   if (process.platform === 'win32') {
     try {

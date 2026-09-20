@@ -13,7 +13,7 @@ if (typeof process.loadEnvFile === 'function') {
 
 const MCP_PATH = path.resolve(root, 'mcp.mjs');
 
-export async function createMcpApp({ dataDir = path.join(root, 'data/runs') } = {}) {
+export async function createMcpApp({ dataDir = path.join(root, '.varina/data/runs') } = {}) {
   const runService = new RunService({ root, dataDir, mockDelayMs: 20 });
   await runService.init();
   const configService = new ConfigService({ root });
@@ -157,7 +157,7 @@ function renderMcpUiHtml() {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Aha · MCP Agent 架构外脑控制台</title>
+  <title>Varina · MCP Agent 架构外脑控制台</title>
   <style>
     :root {
       --bg: #0f1412;
@@ -411,7 +411,7 @@ function renderMcpUiHtml() {
   <header>
     <div class="brand">
       <span class="brand-badge">MCP CONSOLE</span>
-      <h1 class="brand-title">Aha · Agent 架构外脑控制台</h1>
+      <h1 class="brand-title">Varina · Agent 架构外脑控制台</h1>
     </div>
     <nav class="nav-tabs">
       <button class="tab-btn active" data-tab="setup">🔌 宿主挂载</button>
@@ -430,7 +430,7 @@ function renderMcpUiHtml() {
           <span>接入外部 Coding Agent</span>
           <span class="status-pill success">stdio 协议就绪</span>
         </div>
-        <p class="card-desc">将 Aha 挂载为 MCP Server 后，Claude Code、Cursor、Claude Desktop 或 Codex 可以在面临架构两难时随时调用。</p>
+        <p class="card-desc">将 Varina 挂载为 MCP Server 后，Claude Code、Cursor、Claude Desktop 或 Codex 可以在面临架构两难时随时调用。</p>
         
         <div class="field">
           <label>Claude Code 配置 (~/.claude.json 或 项目根目录)</label>
@@ -497,7 +497,7 @@ function renderMcpUiHtml() {
     <section id="panel-simulator" class="panel">
       <div class="card">
         <div class="card-title">模拟 Coding Agent 发起架构设计请求</div>
-        <p class="card-desc">在此调试输入表达与 Token 防爆规范，测试 Aha 针对该架构命题的推演效果。</p>
+        <p class="card-desc">在此调试输入表达与 Token 防爆规范，测试 Varina 针对该架构命题的推演效果。</p>
 
         <div class="alert-box">
           <b>💡 Token 防爆守则</b>：严禁粘贴长篇源文件或大段代码。请作为调用端提炼“死锁矛盾”、“硬约束”和“拓扑说明”。
@@ -558,7 +558,7 @@ function renderMcpUiHtml() {
     <section id="panel-guide" class="panel">
       <div class="card">
         <div class="card-title">外部 Agent 提炼规范 (Prompt Snippet)</div>
-        <p class="card-desc">可直接将以下指令添加至项目根目录的 <code>.cursorrules</code> 或 <code>CLAUDE.md</code>，引导 Coding Agent 正确调用 Aha：</p>
+        <p class="card-desc">可直接将以下指令添加至项目根目录的 <code>.cursorrules</code> 或 <code>CLAUDE.md</code>，引导 Coding Agent 正确调用 Varina：</p>
         <pre><code>### 架构共创技能：调用 Aha 外脑 (\`aha_design_architecture\`)
 
 当遇到架构选型两难、方案死锁或机制设计难题时，调用 MCP 工具 \`aha_design_architecture\`。
@@ -609,7 +609,7 @@ function renderMcpUiHtml() {
       const mcpPath = data.mcpPath || 'c:/Users/15611/Desktop/Aha/prototype/mcp.mjs';
       const claudeCfg = {
         mcpServers: {
-          aha: { command: "node", args: [mcpPath] }
+          varina: { command: "node", args: [mcpPath] }
         }
       };
       document.getElementById('cfg-claude').textContent = JSON.stringify(claudeCfg, null, 2);
@@ -634,7 +634,7 @@ function renderMcpUiHtml() {
         banner.style.display = 'block';
         banner.className = 'alert-box' + (rp.isAdaptive ? ' warn' : '');
         banner.innerHTML = \`<b>💡 模型就绪状态:</b> 已配置 <b>\${rp.activeModels.length} / \${rp.totalModels}</b> 个模型（\${rp.activeModels.join(', ')}）。\` +
-          (rp.isAdaptive ? \`<br><span style="font-size:11px">检测到部分席位对应模型未激活，Aha 自适应调度机制已就绪：空缺席位将在调用时自动按最大多样性均衡分配给可用模型，会议可正常完成。</span>\` :
+          (rp.isAdaptive ? \`<br><span style="font-size:11px">检测到部分席位对应模型未激活，Varina 自适应调度机制已就绪：空缺席位将在调用时自动按最大多样性均衡分配给可用模型，会议可正常完成。</span>\` :
           \`<br><span style="font-size:11px">所有模型配置完整，当前处于完全异构模型协同状态。</span>\`);
       } else {
         banner.style.display = 'none';
@@ -868,7 +868,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const port = Number(process.env.MCP_UI_PORT ?? 4318);
   server.listen(port, '127.0.0.1', () => {
     console.log(`\n======================================================`);
-    console.log(`  Aha · MCP Agent 架构外脑控制台 (Dedicated WebUI)`);
+    console.log(`  Varina · MCP Agent 架构外脑控制台 (Dedicated WebUI)`);
     console.log(`  访问地址: http://127.0.0.1:${port}`);
     console.log(`======================================================\n`);
   });

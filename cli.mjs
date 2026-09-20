@@ -12,7 +12,7 @@ function valueAfter(flag) {
 }
 
 const mode = process.argv.includes('--demo') || process.argv.includes('--mock') ? 'mock' : 'live';
-const workspaceRoot = path.resolve(valueAfter('--workspace') || process.env.AHA_WORKSPACE_ROOT || path.resolve(root, '..'));
+const workspaceRoot = path.resolve(valueAfter('--workspace') || process.env.VARINA_WORKSPACE_ROOT || process.env.AHA_WORKSPACE_ROOT || path.resolve(root, '..'));
 const existingSessionId = valueAfter('--session');
 const initialPrompt = valueAfter('--prompt');
 const service = new AgentService({ root, workspaceRoot });
@@ -31,12 +31,12 @@ try {
 
 const unsubscribe = service.subscribe(session.session_id, event => {
   if (event.event === 'tool_call') process.stderr.write(`\n[工具] ${event.name}\n`);
-  else if (event.phase?.startsWith('aha_') && event.message) process.stderr.write(`[Aha] R${event.round ?? '-'} ${event.message}\n`);
+  else if ((event.phase?.startsWith('varina_') || event.phase?.startsWith('aha_')) && event.message) process.stderr.write(`[Varina] R${event.round ?? '-'} ${event.message}\n`);
 });
 
 async function send(message) {
   const answer = await service.turn(session.session_id, message);
-  output.write(`\nAha> ${answer.content}\n\n`);
+  output.write(`\nVarina> ${answer.content}\n\n`);
 }
 
 process.on('SIGINT', () => {
@@ -50,9 +50,9 @@ try {
   } else if (!input.isTTY) {
     await send('设计一个让 2–4 名玩家在十分钟内持续做出有意义选择的轻量合作机制。');
   } else {
-    console.log(`Aha 对话 Agent · ${mode} · ${session.session_id}`);
+    console.log(`Varina 对话 Agent · ${mode} · ${session.session_id}`);
     console.log(`工作区：${workspaceRoot}`);
-    console.log('输入 /exit 退出；复杂机制问题会在本会话首次自动触发 Aha。\n');
+    console.log('输入 /exit 退出；复杂机制问题会在本会话首次自动触发 Varina。\n');
     const readline = createInterface({ input, output });
     while (true) {
       const message = (await readline.question('You> ')).trim();

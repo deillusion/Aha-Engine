@@ -1,19 +1,21 @@
 // 运行诊断：把一次 run 的调用耗时、思考 token、重试与失败原因摊开，并给出瓶颈判断。
 //
-//   node scripts/run-diagnostics.mjs                      # 诊断 data/runs 里最近一次运行
+//   node scripts/run-diagnostics.mjs                      # 诊断 .varina/data/runs 里最近一次运行
 //   node scripts/run-diagnostics.mjs --last 3             # 最近三次，逐个列出
 //   node scripts/run-diagnostics.mjs --all                # 全部运行，只输出汇总表
 //   node scripts/run-diagnostics.mjs run-1789063068165-1a072a6c
 //   node scripts/run-diagnostics.mjs --live               # 只看真实模式运行
-//   node scripts/run-diagnostics.mjs --out data/diagnostics/xxx.md   # 同时把 Markdown 报告写到文件
+//   node scripts/run-diagnostics.mjs --out .varina/data/diagnostics/xxx.md   # 同时把 Markdown 报告写到文件
 //
-// 只读 data/runs，不发起模型请求，不修改任何运行记录。
+// 只读 .varina/data/runs，不发起模型请求，不修改任何运行记录。
 import { readdirSync, readFileSync, statSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const runsDir = path.join(root, 'data', 'runs');
+const varinaRunsDir = path.join(root, '.varina', 'data', 'runs');
+const legacyRunsDir = path.join(root, 'data', 'runs');
+const runsDir = existsSync(varinaRunsDir) ? varinaRunsDir : (existsSync(legacyRunsDir) ? legacyRunsDir : varinaRunsDir);
 
 const formatMs = ms => (ms == null ? '—' : `${(ms / 1000).toFixed(1)}s`);
 const formatTokens = n => (n == null ? '—' : n.toLocaleString('en-US'));
@@ -70,7 +72,7 @@ function loadRuns(options) {
     : options.all
       ? filtered
       : filtered.slice(0, options.last > 1 ? options.last : 1);
-  if (!wanted.length) throw new Error(`data/runs 里没有匹配的运行记录：${options.ids.join(', ') || '(空)'}`);
+  if (!wanted.length) throw new Error(`运行目录里没有匹配的运行记录：${options.ids.join(', ') || '(空)'}`);
   const missing = options.ids.filter(id => !wanted.some(f => f.name === `${id}.json` || f.name.startsWith(id)));
   if (missing.length) throw new Error(`找不到运行记录：${missing.join(', ')}`);
   return wanted;
@@ -139,7 +141,7 @@ function reportOne({ name, full, run }) {
   const status = dangling ? `${run.status}（有 ${dangling} 次调用未收尾）` : run.status;
   out.push(`## ${run.id}`);
   out.push('');
-  const relPath = full ? path.relative(root, full).replace(/\\/g, '/') : `data/runs/${name}`;
+  const relPath = full ? path.relative(root, full).replace(/\\/g, '/') : `${path.relative(root, runsDir).replace(/\\/g, '/')}/${name}`;
   const fileSize = full && existsSync(full) ? (statSync(full).size / 1048576).toFixed(2) : '—';
   out.push(`- 文件：\`${relPath}\`（${fileSize} MB）`);
   out.push(`- 模式：${run.mode === 'mock' ? '模拟' : '真实'} · 实验：${run.experiment} · 思维刺激：${run.use_operators ? '开' : '关'} · 种子：${run.seed}`);
@@ -247,7 +249,7 @@ const options = parseArgs(process.argv.slice(2));
 const loaded = loadRuns(options).filter(({ run }) => !options.live || run.mode === 'live');
 if (!loaded.length) throw new Error('没有符合条件的运行记录（--live 只保留真实模式）');
 
-const sections = ['# 运行诊断报告', '', `生成时间：${new Date().toISOString()} · 数据目录：\`data/runs\` · 本次纳入 ${loaded.length} 次运行`, ''];
+const sections = ['# 运行诊断报告', '', `生成时间：${new Date().toISOString()} · 数据目录：\`${path.relative(root, runsDir).replace(/\\/g, '/')}\` · 本次纳入 ${loaded.length} 次运行`, ''];
 if (loaded.length > 1) {
   sections.push('## 总览', '', overviewTable(loaded), '');
 }

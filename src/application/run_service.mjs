@@ -14,7 +14,7 @@ export class RunConflictError extends Error {
 }
 
 export class RunService {
-  constructor({ root, dataDir = path.join(root, 'data/runs'), mockDelayMs = 180, store = new Store(dataDir), configLoader = loadConfig } = {}) {
+  constructor({ root, dataDir = path.join(root, '.varina/data/runs'), mockDelayMs = 180, store = new Store(dataDir), configLoader = loadConfig } = {}) {
     this.root = root;
     this.store = store;
     this.mockDelayMs = mockDelayMs;

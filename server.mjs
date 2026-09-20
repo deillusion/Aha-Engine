@@ -2,18 +2,38 @@ import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
-import { readFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, rename, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { RunService, RunConflictError } from './src/application/run_service.mjs';
 import { ConfigService } from './src/application/config_service.mjs';
 import { AgentService, AgentTurnConflictError } from './src/agent/agent_service.mjs';
 const root = path.dirname(fileURLToPath(import.meta.url));
-const defaultRunDataDir = path.join(root, 'data/runs');
+const defaultRunDataDir = path.join(root, '.varina/data/runs');
+const defaultSessionDataDir = path.join(root, '.varina/data/sessions');
+
+async function ensureDataMigration(rootPath) {
+  const legacyDataDir = path.join(rootPath, 'data');
+  const targetDataDir = path.join(rootPath, '.varina', 'data');
+  if (existsSync(legacyDataDir) && !existsSync(targetDataDir)) {
+    try {
+      await mkdir(path.dirname(targetDataDir), { recursive: true });
+      await rename(legacyDataDir, targetDataDir);
+    } catch {
+      try {
+        await cp(legacyDataDir, targetDataDir, { recursive: true });
+        await rm(legacyDataDir, { recursive: true, force: true });
+      } catch {}
+    }
+  }
+}
+
 export async function createApp({
   dataDir = defaultRunDataDir,
-  sessionDataDir = dataDir === defaultRunDataDir ? path.join(root, 'data/sessions') : path.join(dataDir, 'agent-sessions'),
-  workspaceRoot = process.env.AHA_WORKSPACE_ROOT || os.homedir(),
+  sessionDataDir = dataDir === defaultRunDataDir ? defaultSessionDataDir : path.join(dataDir, 'agent-sessions'),
+  workspaceRoot = process.env.VARINA_WORKSPACE_ROOT || process.env.AHA_WORKSPACE_ROOT || os.homedir(),
   mockDelayMs = Number(process.env.MOCK_DELAY_MS ?? 1200)
 } = {}) {
+  await ensureDataMigration(root);
   const runService = new RunService({ root, dataDir, mockDelayMs });
   await runService.init();
   const agentService = new AgentService({ root, dataDir: sessionDataDir, workspaceRoot });
@@ -92,7 +112,7 @@ export async function createApp({
           try {
             const input = await body(req);
             if (typeof input.message !== 'string' || !input.message.trim()) return json(400, { error: 'message 不能为空' });
-            await agentService.startTurn(sessionId, input.message, { enable_aha: input.enable_aha });
+            await agentService.startTurn(sessionId, input.message, { enable_varina: input.enable_varina ?? input.enable_aha, enable_aha: input.enable_varina ?? input.enable_aha, max_tool_iterations: input.max_tool_iterations });
             return json(202, { session_id: sessionId, status: 'running' });
           } catch (e) {
             if (e instanceof AgentTurnConflictError) return json(409, { error: e.message });
@@ -177,8 +197,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     try { process.loadEnvFile(path.join(root, '.env')); } catch {}
   }
   const { server, stop } = await createApp();
-  const port = Number(process.env.PORT ?? 4317);
-  server.listen(port, '127.0.0.1', () => console.log(`Aha: http://127.0.0.1:${port}`));
+  const port = Number(process.env.PORT ?? 27333);
+  server.listen(port, '127.0.0.1', () => console.log(`Varina: http://127.0.0.1:${port}`));
   server.on('error', e => { console.error(e.code === 'EADDRINUSE' ? `端口 ${port} 已占用，请更改 .env 的 PORT` : e.message); process.exitCode = 1; });
   for (const s of ['SIGINT', 'SIGTERM']) process.on(s, async () => { await stop(); server.close(); });
 }

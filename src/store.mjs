@@ -59,7 +59,7 @@ export class Store {
         await handle?.close().catch(() => {});
         if (error.code !== 'EEXIST') throw error;
         if (await this.readActiveLease()) {
-          const conflict = new Error('已有会议在另一个 Aha 入口中运行');
+          const conflict = new Error('已有会议在另一个 Varina 入口中运行');
           conflict.code = 'RUN_LEASED';
           throw conflict;
         }

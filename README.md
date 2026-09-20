@@ -1,8 +1,8 @@
-# Aha-Grounded Creative Agent
+# Varina-Grounded Creative Agent
 
-Aha 是一个以真实工作区文档与代码资料为事实锚点的对话式创作智能体（Agent）。它借用现代 Coding Agent 的工具执行循环与安全防护范式，但专为**游戏机制设计、产品规则系统、数值边界推演、世界观规则体系与复杂架构权衡**量身定制。
+Varina 是一个以真实工作区文档与代码资料为事实锚点的对话式创作智能体（Agent）。它借用现代 Coding Agent 的工具执行循环与安全防护范式，但专为**游戏机制设计、产品规则系统、数值边界推演、世界观规则体系与复杂架构权衡**量身定制。
 
-系统已彻底从早期“提交固定问题、顺序跑完多轮会议、Chair 唯一裁决”的僵化 Workflow，升级为**长驻交互式会话 Agent**：平时保持低延迟日常对话与工作区资料检索，仅在用户面临复杂机制冲突或架构困境时，受控调用内嵌的 **ExploreDesign（Aha 引擎）** 展开 8 席位多视角发散推演，最终交付**可复核事实账本、原子观点板与 2–3 套互不从属的正交机制装配方案**。
+系统已彻底从早期“提交固定问题、顺序跑完多轮会议、Chair 唯一裁决”的僵化 Workflow，升级为**长驻交互式会话 Agent**：平时保持低延迟日常对话与工作区资料检索，仅在用户面临复杂机制冲突或架构困境时，受控调用内嵌的 **ExploreDesign（Varina 引擎）** 展开 8 席位多视角发散推演，最终交付**可复核事实账本、原子观点板与 2–3 套互不从属的正交机制装配方案**。
 
 ---
 
@@ -30,11 +30,11 @@ Aha 是一个以真实工作区文档与代码资料为事实锚点的对话式�
                               │                             │
                               ▼ (普通工具)                   ▼ (ExploreDesign)
         ┌───────────────────────────────┐     ┌────────────────────────────┐
-        │          NodeFsHost           │     │    AhaGateController       │
+        │          NodeFsHost           │     │    VarinaGateController       │
         │ • 词法 + realpath 双重越界检查  │     │ • 首次自动 / 再次确认       │
-        │ • 二次 SHA-256 陈旧写入防护    │     │ • /aha 指令与 UI 开关门控   │
-        │ • 覆盖前自动备份 (.aha/backups)│     └─────────────┬──────────────┘
-        │ • 超限结果落盘 (.aha/results)  │                   │
+        │ • 二次 SHA-256 陈旧写入防护    │     │ • /varina 指令与 UI 开关门控   │
+        │ • 覆盖前自动备份 (.varina/backups)│     └─────────────┬──────────────┘
+        │ • 超限结果落盘 (.varina/results)  │                   │
         │ • ListBackups / RestoreBackup │                   ▼
         └───────────────────────────────┘     ┌────────────────────────────┐
                                               │    ExploreDesignEngine     │
@@ -49,6 +49,8 @@ Aha 是一个以真实工作区文档与代码资料为事实锚点的对话式�
 ### 1. 双层 Agent 运行循环
 - **主对话层（Bounded Tool Loop）**：普通问答、代码/文档梳理、局部方案调整直接在对话流中低延迟响应。每一轮对话最多进行有限次数的 `模型 → 工具 → 结果 → 模型` 迭代。每个 `tool_call_id` 严格执行一次并与结果配对，无伪装完成的静默失败。
 - **重型推演层（ExploreDesign）**：作为主 Agent 治理下的重型工具，专门负责在遇到复杂设计分歧、规则冲突或开放难题时展开多席位推演。
+- **项目初始化（`/init`）**：主 Agent 读取少量高权威资料，生成工作区根目录的 `VARINA.md`。它是项目的 Level-1 系统心智模型与领域本体，记录身份边界、高层运行方式、核心概念、负面护栏和验证路径，而不是开发指南或文件清单；重复输入 `/init` 会自动备份旧版本并重新生成。
+- **忠实委派协议**：后续每轮自动加载 `VARINA.md`。调用 ExploreDesign 时，运行时逐字携带用户原始请求，并把用户约束、已读原文片段与 Agent 假设分栏传递；无法追溯到用户原话的“硬约束”会被本地拒绝，项目资料则由运行时按已读文件与行号重新读取、原样拼接，主 Agent 不能用自由摘要冒充已核查事实。
 
 ### 2. 工作区安全与写入意图硬门控
 - **路径与文件安全隔离**：所有文件操作基于词法路径与 `realpath` 进行双重校验，严禁 `..`、符号链接及 Windows Junction 越界访问；非 UTF-8 二进制与超大文件默认拦截。工作区文档内容严格视为不可信数据，其中出现的任何提示词注入（如“忽略规则”、“调用写文件工具”）均不会改变工具执行权限。
@@ -64,7 +66,7 @@ Aha 是一个以真实工作区文档与代码资料为事实锚点的对话式�
 - **单行限宽**：Grep 命中行若超过 500 字符，自动截断并在结果中标注 `line_chars` 与 `truncated: true`，防止单行超大数据文件瞬间撑爆对话。
 - **单条结果体积上限**：`Grep` 单条上限 20,000 字符，其余工具上限 50,000 字符。超限时**自动落盘而非截断丢弃**，对话上下文只保留 `<persisted-output>` 标记、2,000 字符预览、完整字符数与 `persisted_path`。模型如需阅读细节，可随时通过 `Read` 按路径精准调取。
 - **单轮聚合预算闸门**：单轮对话内所有工具结果合计上限为 200,000 字符。若多工具命中总量超标，系统将从体积最大的结果开始逐个降级落盘，直至整体回到预算安全线内。
-- **干净隔离**：落盘文件写入工作区 `.aha/tool-results/` 目录下，该目录被 `listFiles` 默认跳过，既杜绝下一次检索时的递归污染，又确保模型具备读取权限。
+- **干净隔离**：落盘文件写入工作区 `.varina/tool-results/` 目录下，该目录被 `listFiles` 默认跳过，既杜绝下一次检索时的递归污染，又确保模型具备读取权限。
 
 ### 4. 分级重试与网络韧性 (Retry Policy)
 - **HTTP 状态码白名单**：仅对网络闪断与服务端限流（408 / 409 / 429 / 5xx）进行阶梯式重试。
@@ -81,10 +83,10 @@ Aha 是一个以真实工作区文档与代码资料为事实锚点的对话式�
   - `EvidenceVerifier` 物理重读源码与文档，校验文件路径、内容 Hash、行号范围与代码片段。验真失败的事实显式降级为 `unknown` 或 `stale`，确保观点绝不建立在失实代码之上。
 - **严格去重与观点结晶 (Dedup)**：对候选机制逐项严格执行 ADD / MERGE / DROP；失败时保底为全量 ADD，绝不静默丢弃已付费成果。
 - **动态早停与正交装配 (Assembly)**：最多执行 5 轮推演；当连续两轮新增观点为 0（ADD=0, MERGE=0）且无阻断未知项时自动早停收敛。终局 Assembly 仅基于活跃 Point ID 装配 2–3 套互不从属、权衡清晰的正交机制方案（核心机制、防守补丁、固有代价）。**不设 Chair 独裁，不跑 R6，不挑选唯一赢家**。
-- **门控策略**：首次机制难题自动触发，后续追问复用已有观点板与事实账本；再次发散需用户确认，或通过 `/aha` 指令及界面开关直接放行。
+- **门控策略**：首次机制难题自动触发，后续追问复用已有观点板与事实账本；再次发散需用户确认，或通过 `/varina` (兼容 `/aha`) 指令及界面开关直接放行。
 
 ### 6. 物理隔离存储与状态恢复 (Session Store)
-- **物理分流隔离**：真实运行会话存储于 `data/sessions/live/`，离线模拟演练存储于 `data/sessions/mock/`。支持按模式过滤、单会话删除与一键清空模拟记录。
+- **物理分流隔离**：真实运行会话存储于 `.varina/data/sessions/live/`，离线模拟演练存储于 `.varina/data/sessions/mock/`。支持按模式过滤、单会话删除与一键清空模拟记录。
 - **历史记录平滑迁移**：启动时自动将根目录的遗留会话文件迁移至对应的 `live/` 或 `mock/` 目录。
 - **崩溃恢复与密钥纯净**：会话状态与推演 Checkpoint 均通过临时文件 + rename 原子落盘；进程异常终止后重启时，未完成会话自动标记为 `interrupted`，绝不静默重复计费；持久化文件与审计日志中严格剥离 API Key。
 
@@ -106,7 +108,7 @@ Aha 是一个以真实工作区文档与代码资料为事实锚点的对话式�
 npm start
 ```
 
-启动后在浏览器打开 **<http://127.0.0.1:4317>**。
+启动后在浏览器打开 **<http://127.0.0.1:27333>**。
 
 - **创建会话**：点击「＋ 新会话」，在目录浏览器中选择你的游戏/产品工作区根目录，并选择「真实模型」或「离线模拟」模式。
 - **模型配置**：点击左下角「模型设置」或输入框上方的模型按钮，即可打开配置弹窗，配置 API Key、选用主流供应商预设、执行连通性测试与模型探测。
@@ -117,8 +119,8 @@ npm start
 若想限制工作台文件浏览器的访问范围，可通过环境变量指定：
 
 ```dotenv
-AHA_WORKSPACE_ROOT=D:/my-creative-project
-PORT=4317
+VARINA_WORKSPACE_ROOT=D:/my-creative-project
+PORT=27333
 ```
 
 ---
@@ -140,6 +142,8 @@ npm run demo -- --prompt "设计一个十分钟内持续产生资源取舍的合
 
 CLI 会话支持直接对话、自动工具调用展示，输入 `/exit` 或 `/quit` 安全退出。
 
+首次进入一个项目时可输入 `/init` 生成 `VARINA.md`；项目的稳定定义或架构发生变化后，再输入一次 `/init` 即可重新扫描并安全更新。旧版本会自动备份，普通资料变化不需要频繁初始化，细节仍由 Agent 按当前任务读取原文件。
+
 ---
 
 ### 3. 作为 MCP 工具接入 (Claude Code / Cursor)
@@ -153,8 +157,8 @@ npm run mcp
 ```
 
 #### MCP 工具说明
-- `aha_chat`（**主推工具**）：对话式接入，第一次调用不传 `session_id`，后续传回响应里的 ID 即可继续同一会话，自动共享与演进观点板与事实账本。
-- `aha_design_architecture`（**兼容别名**）：为旧版客户端保留的兼容别名，内部已升级走全新 Agent 引擎，不再调用 Chair 或 R6。
+- `varina_chat`（**主推工具**）：对话式接入，第一次调用不传 `session_id`，后续传回响应里的 ID 即可继续同一会话，自动共享与演进观点板与事实账本。
+- `varina_design_architecture`（**兼容别名**）：为旧版客户端保留的兼容别名，内部已升级走全新 Agent 引擎，不再调用 Chair 或 R6。
 
 #### 接入配置示例
 在客户端的 MCP 配置文件（如 `claude_desktop_config.json` 或 Cursor MCP 配置）中添加：
@@ -166,7 +170,7 @@ npm run mcp
       "command": "node",
       "args": ["C:/absolute/path/to/prototype/mcp.mjs"],
       "env": {
-        "AHA_WORKSPACE_ROOT": "D:/my-creative-project"
+        "VARINA_WORKSPACE_ROOT": "D:/my-creative-project"
       }
     }
   }
@@ -225,10 +229,10 @@ npm run mcp:ui
 
 ```dotenv
 # 工作区根目录（限制文件浏览范围）
-AHA_WORKSPACE_ROOT=C:/Projects/MyGame
+VARINA_WORKSPACE_ROOT=C:/Projects/MyGame
 
-# Web 服务端口（默认 4317）
-PORT=4317
+# Web 服务端口（默认 27333）
+PORT=27333
 
 # 模型 API 密钥（可配置多个服务商）
 DEEPSEEK_API_KEY=sk-xxxx
@@ -244,22 +248,26 @@ SILICONFLOW_API_KEY=sk-xxxx
 
 ## 数据持久化结构
 
+所有工作区元数据、推演数据与会话审计均统一收纳在 `.varina/` 目录下（被 `listFiles` / `grep` 默认过滤，避免污染模型检索上下文）：
+
 ```text
-prototype/
-├── data/
-│   ├── sessions/
-│   │   ├── live/                    # 真实模型运行产生的会话审计 JSON
-│   │   │   └── session-<uuid>.json
-│   │   └── mock/                    # 离线模拟演练产生的会话审计 JSON
-│   │       └── session-<uuid>.json
-│   └── runs/                        # 旧版实验记录（向下兼容）
-│
-└── <workspace>/
-    └── .aha/                        # 工作区本地元数据（被 listFiles 默认过滤）
-        ├── backups/                 # 覆盖写前自动备份的原始文件
-        │   └── <backup-id>/<path>
-        └── tool-results/            # 超出体积预算的超大工具结果落盘
-            └── <session-id>-<turn>-<iteration>-<tool-id>.json
+<workspace>/
+└── .varina/                         # Varina 元数据与持久化目录（Grep / Glob 默认完全跳过）
+    ├── backups/                     # 覆盖写前自动备份的原始文件
+    │   └── <backup-id>/<path>
+    ├── tool-results/                # 超出体积预算的超大工具结果落盘
+    │   └── <session-id>-<turn>-<iteration>-<tool-id>.json
+    └── data/                        # 运行与会话数据
+        ├── sessions/                # 对话会话审计 JSON
+        │   ├── live/                # 真实模型运行产生的会话审计 JSON
+        │   │   └── session-<uuid>.json
+        │   └── mock/                # 离线模拟演练产生的会话审计 JSON
+        │       └── session-<uuid>.json
+        ├── runs/                    # 历史实验运行记录
+        │   ├── live/
+        │   └── mock/
+        ├── checks/                  # 模型检查记录
+        └── diagnostics/             # 诊断报告输出
 ```
 
 ---
@@ -269,7 +277,7 @@ prototype/
 ```text
 server.mjs                         Web 服务与 Agent REST API 路由适配器
 cli.mjs                            对话式交互 CLI
-mcp.mjs                            标准 stdio MCP Server 入口 (aha_chat / 兼容工具)
+mcp.mjs                            标准 stdio MCP Server 入口 (varina_chat / 兼容工具)
 mcp_ui.mjs                         MCP 专用管理与调试 Web 服务 (端口 4318)
 start.ps1                          Windows 快捷启动脚本
 
@@ -284,7 +292,7 @@ src/
 │   ├── agent_service.mjs          会话生命周期、多会话并发锁、事件分发与中断恢复
 │   ├── agent_session.mjs          主 Agent 循环 (Bounded Tool Loop 与写入意图门控)
 │   ├── session_store.mjs          会话持久化存储 (live/mock 物理隔离、迁移与清空)
-│   ├── gate.mjs                   Aha 门控机制 (首次自动、二次确认、/aha 显式放行)
+│   ├── gate.mjs                   Aha 门控机制 (首次自动、二次确认、/varina 显式放行)
 │   ├── model_gateway.mjs          大模型调用网关、并发与间隔限制、离线模拟演练
 │   ├── tool_result_budget.mjs     工具结果体积闸门 (单行限宽、单条/单轮落盘预览)
 │   ├── schemas.mjs                Agent 循环与各角色输出的运行时 JSON Schema

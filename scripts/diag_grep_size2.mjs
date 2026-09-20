@@ -1,8 +1,10 @@
 // 诊断 2：按 agent_session.mjs 的真实拼装方式，量出一次 Grep 会往 messages 里塞多少字节
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { NodeFsHost } from '../src/host/node_fs_host.mjs';
 
-const root = process.argv[2] ?? 'C:\\Users\\15611\\Desktop\\Aha\\prototype';
+const root = process.argv[2] ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const host = await new NodeFsHost(root).init();
 
 // grep 的单文件上限
@@ -35,6 +37,6 @@ for (const query of ['text', 'operator', 'point', '机制', 'operator_id']) {
   }
 }
 
-const runFiles = eligible.filter(f => f.file.startsWith('data/runs/'));
-console.log(`\n可被 Grep 命中的 data/runs 文件 ${runFiles.length} 个，合计 ${(runFiles.reduce((s, x) => s + x.bytes, 0) / 1048576).toFixed(1)} MB`);
+const runFiles = eligible.filter(f => f.file.includes('/runs/'));
+console.log(`\n可被 Grep 命中的 runs 文件 ${runFiles.length} 个，合计 ${(runFiles.reduce((s, x) => s + x.bytes, 0) / 1048576).toFixed(1)} MB`);
 console.log(`其中「整文件就是一行」的文件数：${runFiles.filter(f => f.maxLine >= f.bytes - 2).length}`);

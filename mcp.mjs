@@ -4,7 +4,7 @@ import readline from 'node:readline';
 import { AgentService, AgentTurnConflictError } from './src/agent/agent_service.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
-const workspaceRoot = path.resolve(process.env.AHA_WORKSPACE_ROOT || path.resolve(root, '..'));
+const workspaceRoot = path.resolve(process.env.VARINA_WORKSPACE_ROOT || process.env.AHA_WORKSPACE_ROOT || path.resolve(root, '..'));
 const MCP_PROTOCOL_VERSION = '2024-11-05';
 let agentService;
 
@@ -13,7 +13,7 @@ if (typeof process.loadEnvFile === 'function') {
 }
 
 function log(message) {
-  process.stderr.write(`[Aha-MCP] ${new Date().toISOString()} ${message}\n`);
+  process.stderr.write(`[Varina-MCP] ${new Date().toISOString()} ${message}\n`);
 }
 
 function sendResponse(id, result) {
@@ -30,9 +30,9 @@ function sendNotification(method, params) {
   process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`);
 }
 
-const CHAT_TOOL = {
-  name: 'aha_chat',
-  description: `与 Aha-Grounded 创作 Agent 对话。Agent 会按需读取工作区资料；普通创作和局部修改保持低延迟，复杂机制/架构开放题才启动 ExploreDesign。传回 session_id 可继续同一会话、复用观点板与事实账本。写文件必须在 message 中明确提出。`,
+const VARINA_CHAT_TOOL = {
+  name: 'varina_chat',
+  description: `与 Varina-Grounded 创作 Agent 对话。Agent 会按需读取工作区资料；普通创作和局部修改保持低延迟，复杂机制/架构开放题才启动 ExploreDesign。传回 session_id 可继续同一会话、复用观点板与事实账本。写文件必须在 message 中明确提出。`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -44,9 +44,9 @@ const CHAT_TOOL = {
   }
 };
 
-const COMPATIBILITY_TOOL = {
-  name: 'aha_design_architecture',
-  description: `兼容旧客户端的显式深度探索入口。内部已改为 Aha-Grounded Agent：无 Chair、无 R6、无唯一赢家；返回完整观点板、事实账本和正交机制装配。新接入建议使用 aha_chat，并用 /aha 显式触发新的探索。`,
+const VARINA_DESIGN_TOOL = {
+  name: 'varina_design_architecture',
+  description: `显式深度探索入口。内部为 Varina-Grounded Agent：无 Chair、无 R6、无唯一赢家；返回完整观点板、事实账本和正交机制装配。日常创作建议使用 varina_chat，并用 /varina 显式触发新的探索。`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -61,7 +61,19 @@ const COMPATIBILITY_TOOL = {
   }
 };
 
-const TOOLS = [CHAT_TOOL, COMPATIBILITY_TOOL];
+const AHA_CHAT_TOOL = {
+  ...VARINA_CHAT_TOOL,
+  name: 'aha_chat',
+  description: `[兼容别名，建议使用 varina_chat] 与 Varina 创作 Agent 对话。`
+};
+
+const AHA_DESIGN_TOOL = {
+  ...VARINA_DESIGN_TOOL,
+  name: 'aha_design_architecture',
+  description: `[兼容别名，建议使用 varina_design_architecture] 显式深度探索入口。`
+};
+
+const TOOLS = [VARINA_CHAT_TOOL, VARINA_DESIGN_TOOL, AHA_CHAT_TOOL, AHA_DESIGN_TOOL];
 
 function validateDistilledInput({ problem, constraints = [], context_summary = '' }) {
   if (typeof problem !== 'string' || !problem.trim()) throw new Error('缺少必填参数 problem');
@@ -79,8 +91,11 @@ async function runChat(args) {
   if (args.session_id) session = await agentService.get(args.session_id);
   else session = await agentService.create({ mode: args.mode ?? 'live', title: message.trim().slice(0, 48) });
   const unsubscribe = agentService.subscribe(session.session_id, event => {
-    if (event.message && event.phase?.startsWith('aha_')) sendNotification('notifications/message', { level: 'info', logger: 'aha', data: `[Aha] R${event.round ?? '-'} ${event.message}` });
-    else if (event.event === 'tool_call') sendNotification('notifications/message', { level: 'info', logger: 'aha', data: `[Aha] 使用 ${event.name}` });
+    if (event.message && (event.phase?.startsWith('varina_') || event.phase?.startsWith('aha_'))) {
+      sendNotification('notifications/message', { level: 'info', logger: 'varina', data: `[Varina] R${event.round ?? '-'} ${event.message}` });
+    } else if (event.event === 'tool_call') {
+      sendNotification('notifications/message', { level: 'info', logger: 'varina', data: `[Varina] 使用 ${event.name}` });
+    }
   });
   try {
     const answer = await agentService.turn(session.session_id, message);
@@ -90,20 +105,22 @@ async function runChat(args) {
 
 async function handleToolCall(id, name, args = {}) {
   try {
-    if (name === 'aha_chat') {
+    if (name === 'varina_chat' || name === 'aha_chat') {
       const { sessionId, answer } = await runChat(args);
       return sendResponse(id, {
         content: [{ type: 'text', text: `${answer.content}\n\n---\n会话 ID：${sessionId}（后续调用传回此 ID 可继续收敛）` }],
         structuredContent: { session_id: sessionId, partial: answer.partial === true }
       });
     }
-    if (name !== 'aha_design_architecture') return sendError(id, -32601, `未知工具：${name}`);
+    if (name !== 'varina_design_architecture' && name !== 'aha_design_architecture') {
+      return sendError(id, -32601, `未知工具：${name}`);
+    }
     validateDistilledInput(args);
     const constraints = (args.constraints ?? []).map(item => item.trim()).filter(Boolean);
     const context = args.context_summary?.trim() ? `\n\n已核查背景：${args.context_summary.trim()}` : '';
-    const prompt = `/aha ${args.problem.trim()}${context}${constraints.length ? `\n\n硬约束：\n${constraints.map(item => `- ${item}`).join('\n')}` : ''}`;
+    const prompt = `/varina ${args.problem.trim()}${context}${constraints.length ? `\n\n硬约束：\n${constraints.map(item => `- ${item}`).join('\n')}` : ''}`;
     const { sessionId, answer } = await runChat({ message: prompt, mode: args.mode ?? 'live' });
-    const localWebUrl = `http://127.0.0.1:4317/#${sessionId}`;
+    const localWebUrl = `http://127.0.0.1:27333/#${sessionId}`;
     return sendResponse(id, {
       content: [{
         type: 'text',
@@ -128,7 +145,7 @@ function handleMessage(message) {
   if (method === 'initialize') return sendResponse(id, {
     protocolVersion: MCP_PROTOCOL_VERSION,
     capabilities: { tools: { listChanged: false }, logging: {} },
-    serverInfo: { name: 'aha-architect', version: '2.0.0' }
+    serverInfo: { name: 'varina-architect', version: '2.0.0' }
   });
   if (method === 'ping') return sendResponse(id, {});
   if (method === 'tools/list') return sendResponse(id, { tools: TOOLS });
@@ -148,7 +165,7 @@ export async function startMcpServer() {
     try { handleMessage(JSON.parse(line)); }
     catch (error) { sendError(null, -32700, `Parse error: ${error.message}`); }
   });
-  log('Aha-Grounded Agent MCP Server started on stdio');
+  log('Varina-Grounded Agent MCP Server started on stdio');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await startMcpServer();
