@@ -1,4 +1,4 @@
-# Varina-Grounded Creative Agent
+# Varina - A Creative Agent
 
 Varina 是一个以真实工作区文档与代码资料为事实锚点的对话式创作智能体（Agent）。它借用现代 Coding Agent 的工具执行循环与安全防护范式，但专为**游戏机制设计、产品规则系统、数值边界推演、世界观规则体系与复杂架构权衡**量身定制。
 
