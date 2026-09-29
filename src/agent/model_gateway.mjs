@@ -21,22 +21,6 @@ function mockAgentTurn(request) {
         parsed = JSON.parse(lastTool.content.slice(lastTool.content.indexOf('\n') + 1));
       }
     } catch {}
-    const exploration = parsed.find(item => item.name === 'ExploreDesign' && item.ok);
-    if (exploration) {
-      const result = exploration.result || {};
-      if (result.confirmation_required) {
-        return {
-          message: result.question,
-          tool_calls: [],
-          done: true
-        };
-      }
-      return {
-        message: `Aha 深度探索已完成，共推进 ${result.rounds_executed} 轮，形成 ${result.meeting_board?.points?.length ?? 0} 个原子观点和 ${result.solutions?.length ?? 0} 套机制装配。\n\n${(result.solutions ?? []).map(solution => `- ${solution.name}：核心 ${solution.core_mechanism_ids.join(' + ') || '暂无'}；代价：${solution.inherent_costs.join('；') || '待核验'}`).join('\n')}\n\n这些是正交装配方向，不是排名。你可以指定一个方向继续细化。`,
-        tool_calls: [],
-        done: true
-      };
-    }
     return {
       message: parsed.map(item => item.ok
         ? `${item.name} 已完成：${JSON.stringify(item.result).slice(0, 1200)}`
@@ -46,27 +30,78 @@ function mockAgentTurn(request) {
     };
   }
   const user = [...messages].reverse().find(message => message.role === 'user' && !message.content.startsWith('Trusted session state'))?.content ?? '';
-  const explicit = user.trim().startsWith('/aha') || user.trim().startsWith('/varina');
-  const design = /(?:机制|架构|系统设计|数值边界|取舍|困境|玩法设计|design|architecture)/i.test(user);
-  const ahaDisabled = request.context?.enable_aha === false || request.context?.enable_varina === false;
-  if (!ahaDisabled && (explicit || design)) {
-    return {
-      message: '',
-      tool_calls: [{
-        id: 'mock-explore-1',
-        name: 'ExploreDesign',
-        arguments_json: JSON.stringify({
-          problem: user.replace(/^\s*\/(?:varina|aha)\s*/i, '').trim(),
-          user_constraints: [],
-          source_excerpts: [],
-          agent_hypotheses: [],
-          relevant_files: []
-        })
-      }],
-      done: false
-    };
-  }
   return { message: `我会把它作为持续对话来处理，而不是启动固定流水线。你刚才说的是：${user}`, tool_calls: [], done: true };
+}
+
+function mockVarinaGate(request) {
+  const input = request.context ?? {};
+  const text = String(input.original_user_request ?? '').trim();
+  const obviouslyUnrelated = /^(?:你好|您好|hi|hello|谢谢|感谢|1\s*[+＋]\s*1\s*(?:等于多少|是多少|=\s*\?)?)\s*[。！？!?]*$/i.test(text);
+  return {
+    decision: obviouslyUnrelated ? 'ASK' : 'START',
+    reason: obviouslyUnrelated ? '请求显然没有可继续发散的机制空间' : '请求存在可补充的机制、反例或方案空间'
+  };
+}
+
+function mockBaselineExtraction(request) {
+  const baseline = String(request.context?.baseline_answer ?? '').trim();
+  const requestText = String(request.context?.original_user_request ?? '').trim();
+  return {
+    task_framing: requestText.slice(0, 200) || '继续探索当前问题',
+    user_constraints: [],
+    agent_hypotheses: [],
+    points: baseline ? [{
+      local_id: 'B1',
+      type: 'argument',
+      text: baseline,
+      failure_condition: '',
+      source_quote: baseline
+    }] : [],
+    solutions: []
+  };
+}
+
+function mockVarinaDelta(request) {
+  const newCount = request.context?.new_points?.length ?? 0;
+  const revisedCount = request.context?.revised_points?.length ?? 0;
+  const solutions = request.context?.solutions ?? [];
+  if (!newCount && !revisedCount && !solutions.length) return { text: 'Varina 没有发现足以补充原回答的新内容。' };
+  return { text: `Varina 在原回答之后补充了 ${newCount} 个新观点、${revisedCount} 个修正和 ${solutions.length} 套新组合。` };
+}
+
+function mockDecompositionSeat(request) {
+  const index = Number(String(request.context?.seat_id ?? '').match(/\d+/)?.[0] ?? 1);
+  const variants = [
+    ['哪些不同用途需要争夺同一份有限资源？', '怎样让当前使用资源的决定改变后续仍然可选的行动？'],
+    ['玩家在作出资源选择前需要看到哪些信息？', '选择发生后怎样让玩家理解它造成的后果？'],
+    ['一个人的资源选择怎样改变队友可以采取的行动？', '怎样避免同一种资源用途在多数局面下始终占优？'],
+    ['资源不足时怎样保留有代价的恢复空间？', '怎样让资源的价值随局势变化而不是保持固定？'],
+    ['哪些不同用途需要争夺同一份有限资源？']
+  ];
+  return { questions: variants[(index - 1) % variants.length] };
+}
+
+function mockSubproblemAnswer(request) {
+  const answerIndex = Number(request.context?.answer_index ?? 1);
+  const question = String(request.context?.subproblem_question ?? '目标子问题');
+  const variants = [
+    {
+      type: 'mechanism',
+      text: `把“${question}”对应的选择结果立即映射为下一次可用行动的差异，让参与者能据此调整策略。`,
+      failure_condition: '如果行动差异不可观察或与当前选择无稳定因果关系，机制会退化成随机反馈。'
+    },
+    {
+      type: 'counterexample',
+      text: `检查“${question}”是否在资源充足、单人最优与团队最优冲突时仍能产生真实取舍，而不是只在预设短缺下成立。`,
+      failure_condition: '如果所有常见局面都由同一种选择占优，这个作用不会形成可持续策略空间。'
+    },
+    {
+      type: 'modification',
+      text: `让“${question}”产生的效果随当前局势改变强弱，使同一选择不能在所有阶段保持固定收益。`,
+      failure_condition: '变化规律无法被参与者学习时，动态效果只会增加噪声。'
+    }
+  ];
+  return { elements: [variants[(answerIndex - 1) % variants.length]] };
 }
 
 function mockSeat(request) {
@@ -123,7 +158,7 @@ function mockDedup(request) {
 }
 
 function mockAssembly(request) {
-  const ids = request.context.board.points.filter(point => point.status === 'active').map(point => point.id);
+  const ids = request.context.board.points.filter(point => point.status === 'active' && point.type !== 'subproblem').map(point => point.id);
   const split = Math.max(1, Math.ceil(ids.length / 2));
   const groups = [ids.slice(0, split), ids.slice(split)].filter(group => group.length);
   return {
@@ -140,6 +175,11 @@ function mockAssembly(request) {
 
 export function mockStructuredCompletion(request) {
   if (request.phase === 'agent_turn') return mockAgentTurn(request);
+  if (request.phase === 'varina_gate') return mockVarinaGate(request);
+  if (request.phase === 'baseline_extraction') return mockBaselineExtraction(request);
+  if (request.phase === 'varina_delta') return mockVarinaDelta(request);
+  if (request.phase === 'varina_decomposition_seat') return mockDecompositionSeat(request);
+  if (request.phase === 'varina_subproblem_answer') return mockSubproblemAnswer(request);
   if (request.phase === 'varina_seat' || request.phase === 'aha_seat') return mockSeat(request);
   if (request.phase === 'varina_grounder' || request.phase === 'aha_grounder') return mockGrounder(request);
   if (request.phase === 'varina_dedup' || request.phase === 'aha_dedup') return mockDedup(request);
@@ -287,6 +327,11 @@ export function generationFor(config, phase) {
   const fallback = { temperature: 0.2, reasoning_effort: 'low', max_output_tokens: 8192 };
   if (!config?.generation) return fallback;
   if (phase === 'agent_turn') return config.generation.agent ?? config.generation.chair ?? fallback;
+  if (phase === 'varina_gate') return config.generation.varina_gate ?? config.generation.decision ?? { temperature: 0, reasoning_effort: 'low', max_output_tokens: 512 };
+  if (phase === 'baseline_extraction') return config.generation.baseline_extraction ?? { temperature: 0, reasoning_effort: 'low', max_output_tokens: 8192 };
+  if (phase === 'varina_delta') return config.generation.varina_delta ?? config.generation.chair ?? { temperature: 0.2, reasoning_effort: 'low', max_output_tokens: 4096 };
+  if (phase === 'varina_decomposition_seat') return config.generation.decomposition ?? config.generation.creative ?? fallback;
+  if (phase === 'varina_subproblem_answer') return config.generation.subproblemExpansion ?? config.generation.creative ?? fallback;
   if (phase === 'varina_seat' || phase === 'aha_seat') return config.generation.creative ?? fallback;
   if (phase === 'varina_grounder' || phase === 'aha_grounder') return config.generation.grounder ?? config.generation.dedup ?? fallback;
   if (phase === 'varina_dedup' || phase === 'aha_dedup') return config.generation.dedup ?? fallback;

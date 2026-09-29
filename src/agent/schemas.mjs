@@ -15,10 +15,12 @@ export const POINT_TYPES = Object.freeze([
 ]);
 
 export const AGENT_TOOL_NAMES = Object.freeze([
-  'Read', 'Glob', 'Grep', 'Edit', 'Write', 'InitProject', 'RestoreBackup', 'ListBackups', 'ExploreDesign'
+  'Read', 'Glob', 'Grep', 'Edit', 'Write', 'RestoreBackup', 'ListBackups'
 ]);
 
-export const AGENT_TOOL_SPECS = Object.freeze([
+export const INIT_AGENT_TOOL_NAMES = Object.freeze(['Read', 'Glob', 'Grep', 'InitProject']);
+
+export const ALL_AGENT_TOOL_SPECS = Object.freeze([
   {
     type: 'function',
     function: {
@@ -202,6 +204,12 @@ export const AGENT_TOOL_SPECS = Object.freeze([
   }
 ]);
 
+const selectTools = names => Object.freeze(ALL_AGENT_TOOL_SPECS.filter(spec => names.includes(spec.function.name)));
+
+export const AGENT_TOOL_SPECS = selectTools(AGENT_TOOL_NAMES);
+export const INIT_AGENT_TOOL_SPECS = selectTools(INIT_AGENT_TOOL_NAMES);
+export const EXPLORE_DESIGN_TOOL_SPEC = ALL_AGENT_TOOL_SPECS.find(spec => spec.function.name === 'ExploreDesign');
+
 export const agentTurnSchema = object({
   message: string,
   tool_calls: array(object({
@@ -228,6 +236,18 @@ export const seatResponseSchema = object({
     why_it_matters: string,
     search_hints: array(string),
     affected_local_ids: array(string)
+  }))
+});
+
+export const decompositionSeatResponseSchema = object({
+  questions: array(string)
+});
+
+export const subproblemAnswerResponseSchema = object({
+  elements: array(object({
+    type: { type: 'string', enum: POINT_TYPES },
+    text: string,
+    failure_condition: string
   }))
 });
 
@@ -286,8 +306,44 @@ export const assemblySchema = object({
   unresolved_questions: array(string)
 });
 
+export const varinaGateSchema = object({
+  decision: { type: 'string', enum: ['START', 'ASK'] },
+  reason: string
+});
+
+export const baselineExtractionSchema = object({
+  task_framing: string,
+  user_constraints: array(object({
+    constraint: string,
+    source_quote: string
+  })),
+  agent_hypotheses: array(string),
+  points: array(object({
+    local_id: string,
+    type: { type: 'string', enum: POINT_TYPES },
+    text: string,
+    failure_condition: string,
+    source_quote: string
+  })),
+  solutions: array(object({
+    local_id: string,
+    title: string,
+    text: string,
+    source_quote: string
+  }))
+});
+
+export const varinaDeltaSchema = object({
+  text: string
+});
+
 export const agentSchemas = Object.freeze({
   agent_turn: agentTurnSchema,
+  varina_gate: varinaGateSchema,
+  baseline_extraction: baselineExtractionSchema,
+  varina_delta: varinaDeltaSchema,
+  varina_decomposition_seat: decompositionSeatResponseSchema,
+  varina_subproblem_answer: subproblemAnswerResponseSchema,
   varina_seat: seatResponseSchema,
   varina_grounder: groundingSchema,
   varina_dedup: dedupSchema,
@@ -347,4 +403,3 @@ export function parseStructuredJson(text, schema) {
   if (schema) return validateJsonSchema(value, schema);
   return value;
 }
-

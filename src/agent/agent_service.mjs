@@ -6,6 +6,7 @@ import { NodeFsHost } from '../host/node_fs_host.mjs';
 import { AgentSession, createSessionState } from './agent_session.mjs';
 import { AgentSessionStore } from './session_store.mjs';
 import { ModelGateway } from './model_gateway.mjs';
+import { createJevDecisionGateway } from '../decision/jev_gateway.mjs';
 
 export class AgentTurnConflictError extends Error {
   constructor(message = '这个会话已有一轮正在处理') {
@@ -23,7 +24,8 @@ export class AgentService {
     store = new AgentSessionStore(dataDir),
     configLoader = loadConfig,
     hostFactory = workspace => new NodeFsHost(workspace),
-    gatewayFactory = (config, options) => new ModelGateway(config, options)
+    gatewayFactory = (config, options) => new ModelGateway(config, options),
+    decisionGatewayFactory = createJevDecisionGateway
   } = {}) {
     this.root = root;
     this.workspaceRoot = path.resolve(workspaceRoot);
@@ -31,6 +33,7 @@ export class AgentService {
     this.configLoader = configLoader;
     this.hostFactory = hostFactory;
     this.gatewayFactory = gatewayFactory;
+    this.decisionGatewayFactory = decisionGatewayFactory;
     this.active = new Map();
     this.events = new EventEmitter();
     this.events.setMaxListeners(128);
@@ -43,8 +46,9 @@ export class AgentService {
     this.workspaceRealRoot = await realpath(this.workspaceRoot);
     if (!(await stat(this.workspaceRealRoot)).isDirectory()) throw new Error('允许的工作区根路径不是目录');
     await this.store.init();
+    const interruptedStatuses = new Set(['running', 'baseline_complete', 'evaluating_varina', 'running_varina']);
     for (const session of await this.store.list()) {
-      if (session.status === 'running') {
+      if (interruptedStatuses.has(session.status)) {
         session.status = 'interrupted';
         delete session.active_turn;
         const activeRuntime = session.active_varina_runtime ?? session.active_aha_runtime;
@@ -174,6 +178,13 @@ export class AgentService {
           publish({ event: 'model_call', session_id: sessionId, phase: call.phase, status: call.status, model_id: call.model_id });
         }
       });
+      const decisionGateway = this.decisionGatewayFactory(config, {
+        mode: state.mode ?? 'live', signal: controller.signal,
+        onCall: call => {
+          state.calls.push(call);
+          publish({ event: 'model_call', session_id: sessionId, phase: call.phase, status: call.status, model_id: call.model_id });
+        }
+      });
       const resolvedMaxIterations = Number(max_tool_iterations)
         || Number(process.env.VARINA_MAX_TOOL_ITERATIONS)
         || Number(process.env.AHA_MAX_TOOL_ITERATIONS)
@@ -185,6 +196,7 @@ export class AgentService {
         host,
         store: this.store,
         gateway,
+        decisionGateway,
         config,
         signal: controller.signal,
         onEvent: publish,
@@ -215,6 +227,53 @@ export class AgentService {
   async turn(sessionId, message, options = {}) {
     const started = await this.startTurn(sessionId, message, options);
     return started.completion;
+  }
+
+  async startVarinaConfirmation(sessionId, confirmationId, accepted) {
+    await this.init();
+    if (this.active.has(sessionId)) throw new AgentTurnConflictError();
+    const state = await this.store.get(sessionId);
+    const controller = new AbortController();
+    const slot = { controller, completion: null };
+    this.active.set(sessionId, slot);
+    const publish = event => this.events.emit(sessionId, event);
+    slot.completion = (async () => {
+      if (!accepted) {
+        const agent = new AgentSession({ state, store: this.store, onEvent: publish });
+        return agent.resolveVarinaConfirmation(confirmationId, false);
+      }
+      const rawConfig = await this.configLoader(this.root, state.mode ?? 'live');
+      const { config } = resolveActiveConfig(rawConfig, state.mode ?? 'live');
+      const host = await this.hostFactory(state.workspace_root).init();
+      const gateway = this.gatewayFactory(config, {
+        mode: state.mode ?? 'live', signal: controller.signal,
+        onCall: call => {
+          state.calls.push(call);
+          publish({ event: 'model_call', session_id: sessionId, phase: call.phase, status: call.status, model_id: call.model_id });
+        }
+      });
+      const agent = new AgentSession({
+        state, host, store: this.store, gateway, config, signal: controller.signal, onEvent: publish
+      });
+      return agent.resolveVarinaConfirmation(confirmationId, accepted);
+    })().catch(async error => {
+      state.status = 'idle';
+      const assistant = {
+        id: `msg-varina-confirm-${Date.now()}`,
+        role: 'assistant',
+        content: `常规回答已保留，但 Varina 后续探索未能完成：${String(error?.message ?? error).slice(0, 500)}`,
+        created_at: new Date().toISOString(),
+        partial: true,
+        message_kind: 'varina_addendum'
+      };
+      state.messages.push(assistant);
+      await this.store.save(state).catch(() => {});
+      publish({ event: 'agent_done', session_id: sessionId, message: assistant });
+      return assistant;
+    }).finally(() => {
+      if (this.active.get(sessionId) === slot) this.active.delete(sessionId);
+    });
+    return { session_id: sessionId, completion: slot.completion };
   }
 
   cancel(sessionId) {

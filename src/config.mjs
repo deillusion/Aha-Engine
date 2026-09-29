@@ -1,5 +1,20 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { assert } from './schema.mjs';
+import { DEFAULT_JEV_CONFIG } from './decision/jev_gateway.mjs';
+
+const DEFAULT_DECOMPOSITION_CONFIG = Object.freeze({
+  enabled: true,
+  seatCount: 5,
+  maxRounds: 3,
+  maxQuestionsPerSeat: 4,
+  maxAcceptedSubproblems: 20
+});
+
+const DEFAULT_SUBPROBLEM_EXPANSION_CONFIG = Object.freeze({
+  enabled: true,
+  answersPerSubproblem: 2,
+  maxElementsPerAnswer: 3
+});
 
 export function getModelApiKey(model) {
   if (model?.apiKey && typeof model.apiKey === 'string' && model.apiKey.trim()) {
@@ -180,6 +195,19 @@ export async function loadConfig(root, mode = 'mock', { allowKeyless = false } =
       config.generation.dedup.thinking ??= 'disabled';
     }
   }
+  config.decisionProviders ??= {};
+  config.decisionProviders.jev = {
+    ...DEFAULT_JEV_CONFIG,
+    ...(config.decisionProviders.jev ?? {})
+  };
+  config.decomposition = {
+    ...DEFAULT_DECOMPOSITION_CONFIG,
+    ...(config.decomposition ?? {})
+  };
+  config.subproblemExpansion = {
+    ...DEFAULT_SUBPROBLEM_EXPANSION_CONFIG,
+    ...(config.subproblemExpansion ?? {})
+  };
   validateConfig(config, mode, { allowKeyless });
   return config;
 }
@@ -216,6 +244,35 @@ export function validateConfig(c, mode, { allowKeyless = false } = {}) {
   assert(Number.isFinite(c.timeoutMs) && c.timeoutMs >= 100, 'timeoutMs 无效');
   assert(c.retryDelayMs == null || (Number.isFinite(c.retryDelayMs) && c.retryDelayMs >= 0), 'retryDelayMs 无效');
   for (const k of ['minimumCreativeRatio', 'minimumDecisionRatio']) assert(c[k] > 0 && c[k] <= 1, `${k} 须大于0且不超过1`);
+  const jev = c.decisionProviders?.jev;
+  if (jev) {
+    assert(typeof jev.enabled === 'boolean', 'decisionProviders.jev.enabled must be boolean');
+    const url = new URL(jev.baseUrl);
+    const isLocal = ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
+    assert(url.protocol === 'https:' || (url.protocol === 'http:' && isLocal), 'Jev baseUrl must use HTTPS except for local tests');
+    assert(typeof jev.model === 'string' && jev.model.trim(), 'Jev model is required');
+    assert(typeof jev.apiKeyEnv === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(jev.apiKeyEnv), 'Jev apiKeyEnv is invalid');
+    assert(jev.apiKey == null, 'Jev API key must be supplied through an environment variable');
+    assert(Number.isFinite(jev.timeoutMs) && jev.timeoutMs >= 100, 'Jev timeoutMs is invalid');
+    assert(Number.isInteger(jev.retries) && jev.retries >= 0 && jev.retries <= 2, 'Jev retries must be between 0 and 2');
+    assert(Number.isFinite(jev.askProbabilityThreshold) && jev.askProbabilityThreshold > 0.5 && jev.askProbabilityThreshold <= 1, 'Jev ASK probability threshold is invalid');
+    assert(Number.isFinite(jev.askConfidenceThreshold) && jev.askConfidenceThreshold >= 0 && jev.askConfidenceThreshold <= 1, 'Jev ASK confidence threshold is invalid');
+    assert(Number.isFinite(jev.subproblemDuplicateThreshold) && jev.subproblemDuplicateThreshold > 0.5 && jev.subproblemDuplicateThreshold <= 1, 'Jev subproblem duplicate threshold is invalid');
+  }
+  if (c.decomposition) {
+    const d = c.decomposition;
+    assert(typeof d.enabled === 'boolean', 'decomposition.enabled must be boolean');
+    assert(Number.isInteger(d.seatCount) && d.seatCount >= 1 && d.seatCount <= 32, 'decomposition.seatCount must be between 1 and 32');
+    assert(Number.isInteger(d.maxRounds) && d.maxRounds >= 1 && d.maxRounds <= 5, 'decomposition.maxRounds must be between 1 and 5');
+    assert(Number.isInteger(d.maxQuestionsPerSeat) && d.maxQuestionsPerSeat >= 1 && d.maxQuestionsPerSeat <= 12, 'decomposition.maxQuestionsPerSeat must be between 1 and 12');
+    assert(Number.isInteger(d.maxAcceptedSubproblems) && d.maxAcceptedSubproblems >= 1 && d.maxAcceptedSubproblems <= 100, 'decomposition.maxAcceptedSubproblems must be between 1 and 100');
+  }
+  if (c.subproblemExpansion) {
+    const e = c.subproblemExpansion;
+    assert(typeof e.enabled === 'boolean', 'subproblemExpansion.enabled must be boolean');
+    assert(Number.isInteger(e.answersPerSubproblem) && e.answersPerSubproblem >= 1 && e.answersPerSubproblem <= 8, 'subproblemExpansion.answersPerSubproblem must be between 1 and 8');
+    assert(Number.isInteger(e.maxElementsPerAnswer) && e.maxElementsPerAnswer >= 1 && e.maxElementsPerAnswer <= 6, 'subproblemExpansion.maxElementsPerAnswer must be between 1 and 6');
+  }
   for (const m of c.models) {
     assert(m.id && typeof m.id === 'string' && /^[A-Za-z0-9_-]+$/.test(m.id), `模型 ID "${m?.id}" 格式无效，仅支持字母、数字、下划线和短横线`);
     assert(m.maxOutputTokens == null || (Number.isInteger(m.maxOutputTokens) && m.maxOutputTokens > 0), 'maxOutputTokens 无效');

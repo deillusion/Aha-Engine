@@ -1,9 +1,22 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { operators, random, sampleOperators } from '../operators.mjs';
 import { generationFor } from '../agent/model_gateway.mjs';
-import { assemblySchema, dedupSchema, groundingSchema, seatResponseSchema } from '../agent/schemas.mjs';
 import {
-  ASSEMBLY_SYSTEM_PROMPT, DEDUP_SYSTEM_PROMPT, GROUNDER_SYSTEM_PROMPT, seatMessages
+  assemblySchema,
+  decompositionSeatResponseSchema,
+  dedupSchema,
+  groundingSchema,
+  POINT_TYPES,
+  subproblemAnswerResponseSchema,
+  seatResponseSchema
+} from '../agent/schemas.mjs';
+import {
+  ASSEMBLY_SYSTEM_PROMPT,
+  DEDUP_SYSTEM_PROMPT,
+  GROUNDER_SYSTEM_PROMPT,
+  decompositionSeatMessages,
+  subproblemAnswerMessages,
+  seatMessages
 } from '../agent/prompts.mjs';
 
 function digest(value) {
@@ -242,11 +255,13 @@ function validateOperations(operations, candidates, board, factRefs) {
     } else if (operation.action === 'MERGE') {
       const target = board.points.find(point => point.id === operation.target_point_id && point.status === 'active');
       if (!target) throw new Error('MERGE 目标不存在或不活跃');
+      if (target.type === 'subproblem') throw new Error('创意观点不能合并进子问题节点');
       if (!operation.text?.trim() || !operation.failure_condition?.trim() || !operation.type) throw new Error('MERGE 缺少完整观点字段');
       if (target.text === operation.text && target.failure_condition === operation.failure_condition) throw new Error('MERGE 未产生实质变化');
     } else {
       if (!operation.reason?.trim()) throw new Error('DROP 缺少理由');
       if (operation.duplicate_of && !board.points.some(point => point.id === operation.duplicate_of)) throw new Error('DROP duplicate_of 引用了不存在的 Point');
+      if (operation.duplicate_of && board.points.some(point => point.id === operation.duplicate_of && point.type === 'subproblem')) throw new Error('创意观点不能以子问题作为重复代表');
     }
   }
   if (covered.length !== candidateIds.size || new Set(covered).size !== covered.length || covered.some(id => !candidateIds.has(id))) {
@@ -302,7 +317,7 @@ function applyOperations(runtime, round, operations, candidates) {
 }
 
 function validateAssembly(result, board) {
-  const active = new Set(board.points.filter(point => point.status === 'active').map(point => point.id));
+  const active = new Set(board.points.filter(point => point.status === 'active' && point.type !== 'subproblem').map(point => point.id));
   const solutionIds = new Set();
   if (result.solutions.length > 3) throw new Error('装配方案最多 3 个');
   for (const solution of result.solutions) {
@@ -340,14 +355,662 @@ async function fulfillLoadRequests(host, requests, loaded, degradations, signal)
   }
 }
 
+function normalizedQuestionText(value) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+export function normalizeDecompositionResponse(response, { round, seatId, maxQuestions }) {
+  if (!response || typeof response !== 'object' || !Array.isArray(response.questions)) {
+    throw new Error('拆解席位没有返回 questions 数组');
+  }
+  const seen = new Set();
+  const questions = [];
+  for (const raw of response.questions) {
+    if (typeof raw !== 'string') continue;
+    const question = normalizedQuestionText(raw);
+    if (!question || seen.has(question)) continue;
+    seen.add(question);
+    questions.push(question);
+    if (questions.length >= maxQuestions) break;
+  }
+  return questions.map((question, index) => ({
+    candidate_id: `D${round}:${seatId}:Q${index + 1}`,
+    question,
+    decomposition_round: round,
+    origin_seat_id: seatId,
+    local_index: index
+  }));
+}
+
+function exactDuplicateDecisions(reference, candidates) {
+  const referenceTexts = new Set(reference.map(item => normalizedQuestionText(item.question).toLocaleLowerCase()));
+  const duplicates = [];
+  const undecided = [];
+  for (const candidate of candidates) {
+    if (referenceTexts.has(normalizedQuestionText(candidate.question).toLocaleLowerCase())) {
+      duplicates.push({ candidate_id: candidate.candidate_id, probability: 1, method: 'exact' });
+    } else undecided.push(candidate);
+  }
+  return { duplicates, undecided };
+}
+
+async function mergeSubproblemSets({
+  decisionGateway,
+  parentProblem,
+  left,
+  right,
+  logicalId
+}) {
+  if (!right.length) return { items: [...left], survivors: [], rejected: [], incomplete: false };
+  if (!left.length) return { items: [...right], survivors: [...right], rejected: [], incomplete: false };
+
+  const exact = exactDuplicateDecisions(left, right);
+  const rejected = exact.duplicates.map(item => ({
+    ...item,
+    question: right.find(candidate => candidate.candidate_id === item.candidate_id)?.question ?? ''
+  }));
+  if (!exact.undecided.length) return { items: [...left], survivors: [], rejected, incomplete: false };
+  if (!decisionGateway) {
+    return {
+      items: [...left, ...exact.undecided],
+      survivors: [...exact.undecided],
+      rejected,
+      incomplete: true
+    };
+  }
+
+  try {
+    const result = await decisionGateway.evaluateSubproblemRedundancy({
+      parentProblem,
+      referenceSubproblems: left,
+      candidateSubproblems: exact.undecided,
+      logicalId
+    });
+    const decisionById = new Map(result.decisions.map(item => [item.candidate_id, item]));
+    const survivors = [];
+    for (const candidate of exact.undecided) {
+      const decision = decisionById.get(candidate.candidate_id);
+      if (!decision) throw new Error(`Jev 缺少 ${candidate.candidate_id} 的判重结果`);
+      if (decision.duplicate) {
+        rejected.push({
+          candidate_id: candidate.candidate_id,
+          question: candidate.question,
+          probability: decision.probability,
+          method: 'jev'
+        });
+      } else survivors.push(candidate);
+    }
+    return { items: [...left, ...survivors], survivors, rejected, incomplete: false };
+  } catch (error) {
+    return {
+      items: [...left, ...exact.undecided],
+      survivors: [...exact.undecided],
+      rejected,
+      incomplete: true,
+      error
+    };
+  }
+}
+
+async function deduplicateSubproblemGroup({
+  decisionGateway,
+  parentProblem,
+  candidates,
+  logicalId
+}) {
+  let groups = candidates.map(item => [item]);
+  const rejected = [];
+  const errors = [];
+  let incomplete = false;
+  let level = 0;
+  while (groups.length > 1) {
+    level++;
+    const next = [];
+    const merges = [];
+    for (let index = 0; index < groups.length; index += 2) {
+      if (index + 1 >= groups.length) {
+        next.push(groups[index]);
+        continue;
+      }
+      const slot = next.length;
+      next.push(null);
+      merges.push({ slot, left: groups[index], right: groups[index + 1], index: index / 2 });
+    }
+    const results = await Promise.all(merges.map(merge => mergeSubproblemSets({
+      decisionGateway,
+      parentProblem,
+      left: merge.left,
+      right: merge.right,
+      logicalId: `${logicalId}:L${level}:M${merge.index + 1}`
+    })));
+    merges.forEach((merge, index) => {
+      const result = results[index];
+      next[merge.slot] = result.items;
+      rejected.push(...result.rejected);
+      incomplete ||= result.incomplete;
+      if (result.error) errors.push(result.error);
+    });
+    groups = next;
+  }
+  return { survivors: groups[0] ?? [], rejected, incomplete, errors };
+}
+
+function appendSubproblemsToBoard(runtime, subproblems) {
+  if (!subproblems.length) return [];
+  const points = structuredClone(runtime.current_board.points);
+  const existingSources = new Set(points.flatMap(point => point.source_candidate_ids ?? []));
+  let nextPoint = points.reduce((max, point) => Math.max(max, Number(point.id.slice(1)) || 0), 0) + 1;
+  const added = [];
+  for (const subproblem of subproblems) {
+    if (existingSources.has(subproblem.candidate_id)) continue;
+    const id = `P${String(nextPoint++).padStart(3, '0')}`;
+    const point = {
+      id,
+      revision: 1,
+      status: 'active',
+      type: 'subproblem',
+      text: subproblem.question,
+      failure_condition: '',
+      source_candidate_ids: [subproblem.candidate_id],
+      evidence_refs: [],
+      round_introduced: 0,
+      source: 'decomposition',
+      decomposition_round: subproblem.decomposition_round,
+      origin_seat_id: subproblem.origin_seat_id,
+      arrival_index: subproblem.arrival_index,
+      revisions: [{
+        revision: 1,
+        round: 0,
+        text: subproblem.question,
+        failure_condition: '',
+        source_candidate_ids: [subproblem.candidate_id],
+        evidence_refs: []
+      }]
+    };
+    points.push(point);
+    added.push(point);
+  }
+  if (added.length) {
+    runtime.current_board = { version: runtime.current_board.version + 1, points };
+    runtime.board_history.push(structuredClone(runtime.current_board));
+  }
+  return added;
+}
+
+export function normalizeSubproblemAnswer(response, {
+  subproblemId,
+  answerIndex,
+  seatId,
+  modelId,
+  maxElements
+}) {
+  if (!response || typeof response !== 'object' || !Array.isArray(response.elements)) {
+    throw new Error('子问题回答没有返回 elements 数组');
+  }
+  const seen = new Set();
+  const elements = [];
+  for (const raw of response.elements) {
+    if (!raw || typeof raw !== 'object') continue;
+    const type = String(raw.type ?? '').trim();
+    const text = normalizedQuestionText(raw.text);
+    const failureCondition = normalizedQuestionText(raw.failure_condition);
+    if (!POINT_TYPES.includes(type) || !text || !failureCondition) continue;
+    const key = text.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    elements.push({ type, text, failure_condition: failureCondition });
+    if (elements.length >= maxElements) break;
+  }
+  return elements.map((element, index) => ({
+    candidate_id: `S:${subproblemId}:A${answerIndex}:E${index + 1}`,
+    parent_subproblem_id: subproblemId,
+    answer_index: answerIndex,
+    answer_seat_id: seatId,
+    answer_model_id: modelId,
+    ...element
+  }));
+}
+
+function selectSubproblemAnswerAssignments(seats, count, offset) {
+  const rotated = seats.map((_, index) => seats[(index + offset) % seats.length]);
+  const selected = [];
+  const usedModels = new Set();
+  const usedSeats = new Set();
+  for (const seat of rotated) {
+    if (usedModels.has(seat.modelId)) continue;
+    selected.push(seat);
+    usedModels.add(seat.modelId);
+    usedSeats.add(seat.id);
+    if (selected.length >= count) break;
+  }
+  if (selected.length < count) {
+    for (const seat of rotated) {
+      if (usedSeats.has(seat.id)) continue;
+      selected.push(seat);
+      usedSeats.add(seat.id);
+      if (selected.length >= count) break;
+    }
+  }
+  while (selected.length < count) selected.push(rotated[selected.length % rotated.length]);
+  return selected.map((seat, index) => ({
+    answer_index: index + 1,
+    seat_id: seat.id,
+    model_id: seat.modelId
+  }));
+}
+
+function appendSubproblemElementsToBoard(runtime, elements, state) {
+  if (!elements.length) return [];
+  const points = structuredClone(runtime.current_board.points);
+  const existingTexts = new Set(points
+    .filter(point => point.status === 'active' && point.type !== 'subproblem')
+    .map(point => normalizedQuestionText(point.text).toLocaleLowerCase()));
+  const existingSources = new Set(points.flatMap(point => point.source_candidate_ids ?? []));
+  let nextPoint = points.reduce((max, point) => Math.max(max, Number(point.id.slice(1)) || 0), 0) + 1;
+  const added = [];
+  for (const element of elements) {
+    if (existingSources.has(element.candidate_id)) continue;
+    const textKey = normalizedQuestionText(element.text).toLocaleLowerCase();
+    if (existingTexts.has(textKey)) {
+      state.rejected_exact_duplicates.push({
+        candidate_id: element.candidate_id,
+        parent_subproblem_id: element.parent_subproblem_id,
+        text: element.text
+      });
+      continue;
+    }
+    existingTexts.add(textKey);
+    const id = `P${String(nextPoint++).padStart(3, '0')}`;
+    const point = {
+      id,
+      revision: 1,
+      status: 'active',
+      type: element.type,
+      text: element.text,
+      failure_condition: element.failure_condition,
+      source_candidate_ids: [element.candidate_id],
+      evidence_refs: [],
+      round_introduced: 0,
+      source: 'subproblem_expansion',
+      parent_subproblem_id: element.parent_subproblem_id,
+      answer_index: element.answer_index,
+      answer_seat_id: element.answer_seat_id,
+      answer_model_id: element.answer_model_id,
+      revisions: [{
+        revision: 1,
+        round: 0,
+        text: element.text,
+        failure_condition: element.failure_condition,
+        source_candidate_ids: [element.candidate_id],
+        evidence_refs: []
+      }]
+    };
+    points.push(point);
+    added.push(point);
+  }
+  if (added.length) {
+    runtime.current_board = { version: runtime.current_board.version + 1, points };
+    runtime.board_history.push(structuredClone(runtime.current_board));
+  }
+  return added;
+}
+
 export class ExploreDesignEngine {
-  constructor({ host, gateway, config, signal, onEvent = () => {}, checkpoint = async () => {} }) {
+  constructor({ host, gateway, decisionGateway = null, config, signal, onEvent = () => {}, checkpoint = async () => {} }) {
     this.host = host;
     this.gateway = gateway;
+    this.decisionGateway = decisionGateway;
     this.config = config;
     this.signal = signal;
     this.onEvent = onEvent;
     this.checkpoint = checkpoint;
+  }
+
+  async runSubproblemExpansion({ runtime, runId }) {
+    const settings = this.config.subproblemExpansion;
+    if (!settings?.enabled) return;
+    const subproblems = runtime.current_board.points.filter(point => point.status === 'active' && point.type === 'subproblem');
+    const seats = this.config.seats;
+    if (!seats.length) return;
+
+    const state = {
+      status: 'active',
+      answers_per_subproblem: settings.answersPerSubproblem,
+      max_elements_per_answer: settings.maxElementsPerAnswer,
+      subproblem_count: subproblems.length,
+      total_requests: subproblems.length * settings.answersPerSubproblem,
+      successful_answers: 0,
+      failed_answers: 0,
+      records: [],
+      rejected_exact_duplicates: [],
+      added_point_ids: []
+    };
+    runtime.subproblem_expansion = state;
+    await this.checkpoint(runtime);
+    this.onEvent({
+      phase: 'varina_subproblem_expansion_start',
+      round: 0,
+      message: `${subproblems.length} 个子问题分别启动 ${settings.answersPerSubproblem} 个回答席位`
+    });
+
+    const boardSnapshot = structuredClone(runtime.current_board);
+    const jobs = subproblems.map((subproblem, subproblemIndex) => (async () => {
+      this.signal?.throwIfAborted();
+      const assignments = selectSubproblemAnswerAssignments(
+        seats,
+        settings.answersPerSubproblem,
+        subproblemIndex % seats.length
+      );
+      const packet = canonical({
+        original_user_request: runtime.original_user_request,
+        task_framing: runtime.task_framing,
+        user_constraints: runtime.hard_constraints,
+        project_context: runtime.project_context,
+        verified_investigation_context: runtime.code_context,
+        target_subproblem: { id: subproblem.id, question: subproblem.text },
+        sibling_subproblems: subproblems
+          .filter(point => point.id !== subproblem.id)
+          .map(point => ({ id: point.id, question: point.text })),
+        existing_points: boardSnapshot.points
+          .filter(point => point.status === 'active' && point.type !== 'subproblem')
+          .map(point => ({ id: point.id, type: point.type, text: point.text, failure_condition: point.failure_condition }))
+      });
+      const packetToken = digest({ run_id: runId, phase: 'subproblem_expansion', subproblem_id: subproblem.id, packet });
+      const record = {
+        subproblem_id: subproblem.id,
+        question: subproblem.text,
+        packet_token: packetToken,
+        answers: assignments.map(assignment => ({
+          ...assignment,
+          status: 'running',
+          candidate_ids: [],
+          elements: []
+        }))
+      };
+      state.records.push(record);
+      await this.checkpoint(runtime).catch(() => {});
+      await Promise.all(record.answers.map(async answer => {
+        try {
+          const response = await this.gateway.invoke({
+            phase: 'varina_subproblem_answer',
+            modelId: answer.model_id,
+            messages: subproblemAnswerMessages({ packet, maxElements: settings.maxElementsPerAnswer }),
+            schema: subproblemAnswerResponseSchema,
+            generation: generationFor(this.config, 'varina_subproblem_answer'),
+            context: {
+              subproblem_id: subproblem.id,
+              subproblem_question: subproblem.text,
+              answer_index: answer.answer_index,
+              seat_id: answer.seat_id,
+              packet_token: packetToken
+            },
+            logicalId: `${runId}:${subproblem.id}:answer-${answer.answer_index}`
+          });
+          const elements = normalizeSubproblemAnswer(response, {
+            subproblemId: subproblem.id,
+            answerIndex: answer.answer_index,
+            seatId: answer.seat_id,
+            modelId: answer.model_id,
+            maxElements: settings.maxElementsPerAnswer
+          });
+          answer.status = 'completed';
+          answer.candidate_ids = elements.map(element => element.candidate_id);
+          answer.elements = elements;
+          state.successful_answers++;
+        } catch (error) {
+          answer.status = 'failed';
+          answer.error = String(error?.message ?? error).slice(0, 220);
+          state.failed_answers++;
+          runtime.degradations.push(`${subproblem.id} 回答席位 ${answer.answer_index} 失败：${answer.error}`);
+        }
+        await this.checkpoint(runtime).catch(() => {});
+      }));
+      this.onEvent({
+        phase: 'varina_subproblem_expansion_done',
+        round: 0,
+        subproblem_id: subproblem.id,
+        message: `${subproblem.id} 完成 ${record.answers.filter(answer => answer.status === 'completed').length}/${assignments.length} 个回答`
+      });
+      return record;
+    })());
+
+    const records = await Promise.all(jobs);
+    state.records = records;
+    const elements = records.flatMap(record => record.answers.flatMap(answer => answer.elements));
+    state.added_point_ids = appendSubproblemElementsToBoard(runtime, elements, state).map(point => point.id);
+    for (const record of state.records) {
+      for (const answer of record.answers) delete answer.elements;
+    }
+    state.status = 'complete';
+    await this.checkpoint(runtime);
+    this.onEvent({
+      phase: 'varina_subproblem_expansion_complete',
+      round: 0,
+      message: `子问题发散完成，观点板新增 ${state.added_point_ids.length} 个回答元素`
+    });
+  }
+
+  async runDecomposition({ runtime, runId, loadedFiles }) {
+    const settings = this.config.decomposition;
+    if (!settings?.enabled) return;
+    const seats = this.config.seats.slice(0, settings.seatCount);
+    if (!seats.length) return;
+
+    const state = {
+      status: 'active',
+      current_round: 0,
+      max_rounds: settings.maxRounds,
+      seat_count: seats.length,
+      max_questions_per_seat: settings.maxQuestionsPerSeat,
+      max_accepted_subproblems: settings.maxAcceptedSubproblems,
+      accepted: [],
+      rejected: [],
+      round_records: [],
+      arrival_counter: 0,
+      stop_reason: null,
+      dedup_incomplete: false
+    };
+    runtime.decomposition = state;
+    await this.checkpoint(runtime);
+    this.onEvent({
+      phase: 'varina_decomposition_start',
+      round: 0,
+      message: `${seats.length} 个席位开始拆解问题`
+    });
+
+    if (!this.decisionGateway) {
+      runtime.degradations.push('问题拆解未连接 Jev；仅执行完全相同文本去重，并在第一轮后停止');
+      state.dedup_incomplete = true;
+    }
+
+    for (let round = 1; round <= settings.maxRounds; round++) {
+      this.signal?.throwIfAborted();
+      state.current_round = round;
+      const packetToken = digest(canonical({
+        run_id: runId,
+        phase: 'decomposition',
+        round,
+        original_user_request: runtime.original_user_request,
+        task_framing: runtime.task_framing,
+        user_constraints: runtime.hard_constraints,
+        board_version: runtime.current_board.version,
+        accepted: state.accepted.map(item => ({ candidate_id: item.candidate_id, question: item.question })),
+        repository_snapshot_id: runtime.repository_snapshot_id
+      }));
+      state.current_packet_token = packetToken;
+      state.partial_groups = [];
+      await this.checkpoint(runtime);
+      this.onEvent({
+        phase: 'varina_decomposition_round_start',
+        round,
+        message: `第 ${round} 轮问题拆解开始`
+      });
+
+      const packet = canonical({
+        original_user_request: runtime.original_user_request,
+        task_framing: runtime.task_framing,
+        user_constraints: runtime.hard_constraints,
+        project_context: runtime.project_context,
+        verified_investigation_context: runtime.code_context,
+        baseline_points: runtime.current_board.points
+          .filter(point => point.type !== 'subproblem')
+          .map(point => ({ id: point.id, type: point.type, text: point.text, failure_condition: point.failure_condition })),
+        accepted_subproblems: state.accepted.map(item => item.question),
+        decomposition_round: round
+      });
+
+      let accepted = [...state.accepted];
+      let mergeChain = Promise.resolve();
+      let stopAfterRound = false;
+      let roundDedupIncomplete = !this.decisionGateway;
+      const groupRecords = [];
+      const tasks = seats.map(seat => (async () => {
+        const response = await this.gateway.invoke({
+          phase: 'varina_decomposition_seat',
+          modelId: seat.modelId,
+          messages: decompositionSeatMessages({ packet, maxSubproblems: settings.maxQuestionsPerSeat }),
+          schema: decompositionSeatResponseSchema,
+          generation: generationFor(this.config, 'varina_decomposition_seat'),
+          context: { round, seat_id: seat.id, packet_token: packetToken },
+          logicalId: `${runId}:D${round}:${seat.id}`
+        });
+        if (state.current_packet_token !== packetToken) throw new Error(`拆解席位 ${seat.id} 返回了过期轮次结果`);
+        const candidates = normalizeDecompositionResponse(response, {
+          round,
+          seatId: seat.id,
+          maxQuestions: settings.maxQuestionsPerSeat
+        });
+        const internal = await deduplicateSubproblemGroup({
+          decisionGateway: this.decisionGateway,
+          parentProblem: runtime.original_user_request,
+          candidates,
+          logicalId: `${runId}:D${round}:${seat.id}:internal`
+        });
+        roundDedupIncomplete ||= internal.incomplete;
+        if (internal.errors.length) {
+          runtime.degradations.push(`D${round} ${seat.id} 组内判重降级：${String(internal.errors[0]?.message ?? internal.errors[0]).slice(0, 180)}`);
+        }
+        state.rejected.push(...internal.rejected.map(item => ({
+          ...item,
+          decomposition_round: round,
+          seat_id: seat.id,
+          stage: 'within_group'
+        })));
+
+        const previousMerge = mergeChain;
+        const queuedMerge = previousMerge.then(async () => {
+          const arrivalIndex = ++state.arrival_counter;
+          const ready = internal.survivors.map(item => ({ ...item, arrival_index: arrivalIndex }));
+          const available = Math.max(0, settings.maxAcceptedSubproblems - accepted.length);
+          const candidatesWithinBudget = ready.slice(0, available);
+          const overflow = ready.slice(available);
+          const merged = await mergeSubproblemSets({
+            decisionGateway: this.decisionGateway,
+            parentProblem: runtime.original_user_request,
+            left: accepted,
+            right: candidatesWithinBudget,
+            logicalId: `${runId}:D${round}:arrival-${arrivalIndex}`
+          });
+          accepted = merged.items;
+          roundDedupIncomplete ||= merged.incomplete;
+          if (merged.error) {
+            runtime.degradations.push(`D${round} ${seat.id} 组间判重降级：${String(merged.error.message ?? merged.error).slice(0, 180)}`);
+          }
+          state.rejected.push(...merged.rejected.map(item => ({
+            ...item,
+            decomposition_round: round,
+            seat_id: seat.id,
+            arrival_index: arrivalIndex,
+            stage: 'between_groups'
+          })));
+          state.rejected.push(...overflow.map(item => ({
+            candidate_id: item.candidate_id,
+            question: item.question,
+            decomposition_round: round,
+            seat_id: seat.id,
+            arrival_index: arrivalIndex,
+            stage: 'question_limit',
+            method: 'limit'
+          })));
+          const record = {
+            seat_id: seat.id,
+            model_id: seat.modelId,
+            arrival_index: arrivalIndex,
+            raw_count: candidates.length,
+            internal_survivor_count: internal.survivors.length,
+            global_survivor_count: merged.survivors.length,
+            fully_redundant: candidates.length === 0 || merged.survivors.length === 0,
+            questions: candidates.map(item => item.question),
+            surviving_candidate_ids: merged.survivors.map(item => item.candidate_id)
+          };
+          groupRecords.push(record);
+          state.partial_groups.push(record);
+          if (record.fully_redundant) stopAfterRound = true;
+          if (overflow.length || accepted.length >= settings.maxAcceptedSubproblems) stopAfterRound = true;
+          await this.checkpoint(runtime);
+          this.onEvent({
+            phase: 'varina_decomposition_group_done',
+            round,
+            seat_id: seat.id,
+            message: `席位 ${seat.id} 保留 ${record.global_survivor_count}/${record.raw_count} 个子问题`
+          });
+          return record;
+        });
+        mergeChain = queuedMerge.catch(() => {});
+        return queuedMerge;
+      })());
+
+      const settled = await Promise.allSettled(tasks);
+      await mergeChain;
+      let failedSeats = 0;
+      settled.forEach((item, index) => {
+        if (item.status === 'rejected') {
+          failedSeats++;
+          runtime.degradations.push(`D${round} ${seats[index].id} 拆解失败：${String(item.reason?.message ?? item.reason).slice(0, 180)}`);
+        }
+      });
+      if (failedSeats) roundDedupIncomplete = true;
+      state.accepted = accepted;
+      state.dedup_incomplete ||= roundDedupIncomplete;
+      state.round_records.push({
+        round_index: round,
+        packet_token: packetToken,
+        successful_seats: seats.length - failedSeats,
+        failed_seats: failedSeats,
+        groups: [...groupRecords].sort((a, b) => a.arrival_index - b.arrival_index),
+        accepted_total: accepted.length,
+        stop_after_round: stopAfterRound,
+        dedup_incomplete: roundDedupIncomplete
+      });
+      delete state.partial_groups;
+      delete state.current_packet_token;
+      await this.checkpoint(runtime);
+      this.onEvent({
+        phase: 'varina_decomposition_round_complete',
+        round,
+        message: `第 ${round} 轮拆解后保留 ${accepted.length} 个子问题`
+      });
+
+      if (roundDedupIncomplete) {
+        state.stop_reason = 'dedup_incomplete';
+        break;
+      }
+      if (stopAfterRound) {
+        state.stop_reason = accepted.length >= settings.maxAcceptedSubproblems ? 'question_limit' : 'redundant_seat';
+        break;
+      }
+      if (round === settings.maxRounds) state.stop_reason = 'max_rounds';
+    }
+
+    state.added_point_ids = appendSubproblemsToBoard(runtime, state.accepted).map(point => point.id);
+    state.status = 'complete';
+    state.stop_reason ??= 'max_rounds';
+    await this.checkpoint(runtime);
+    this.onEvent({
+      phase: 'varina_decomposition_complete',
+      round: state.current_round,
+      message: `问题拆解完成，观点板新增 ${state.added_point_ids.length} 个子问题`
+    });
   }
 
   async run({
@@ -360,9 +1023,23 @@ export class ExploreDesignEngine {
     codeContext = '',
     projectContext = '',
     relevantFiles = [],
+    initialBoard = null,
+    baselineSolutions = [],
     seed = Date.now(),
     runId = `varina-${Date.now()}-${randomUUID().slice(0, 6)}`
   }) {
+    const seededBoard = initialBoard
+      ? structuredClone(initialBoard)
+      : { version: 0, points: [] };
+    if (!Number.isInteger(seededBoard.version) || seededBoard.version < 0 || !Array.isArray(seededBoard.points)) {
+      throw new Error('initialBoard 无效');
+    }
+    const seededIds = new Set();
+    for (const point of seededBoard.points) {
+      if (!/^P\d+$/.test(point.id) || Number(point.id.slice(1)) < 1 || seededIds.has(point.id)) throw new Error('initialBoard Point ID 无效或重复');
+      if (!point.text?.trim() || !point.type || !point.status) throw new Error('initialBoard Point 字段不完整');
+      seededIds.add(point.id);
+    }
     const runtime = {
       run_id: runId, session_id: sessionId, problem,
       original_user_request: originalRequest,
@@ -372,8 +1049,9 @@ export class ExploreDesignEngine {
       agent_hypotheses: agentHypotheses,
       code_context: codeContext,
       status: 'active', repository_snapshot_id: '', current_round: 1, max_rounds: 5,
-      consecutive_no_change_rounds: 0, board_history: [{ version: 0, points: [] }],
-      current_board: { version: 0, points: [] }, fact_ledger: [], working_memory_files: [],
+      consecutive_no_change_rounds: 0, board_history: [structuredClone(seededBoard)],
+      current_board: seededBoard, baseline_point_ids: [...seededIds], baseline_solutions: structuredClone(baselineSolutions),
+      fact_ledger: [], working_memory_files: [],
       round_records: [], seat_responses: [], current_packet_token: '', applied_idempotency_keys: [],
       rejected_directions: [], degradations: []
     };
@@ -386,6 +1064,14 @@ export class ExploreDesignEngine {
       message: 'Varina 深度多视角探索已开启'
     });
     const loadedFiles = await loadInitialFiles(this.host, relevantFiles, runtime.degradations);
+    runtime.repository_snapshot_id = snapshotId(loadedFiles);
+    runtime.working_memory_files = loadedFiles.map(file => ({
+      file_path: file.filePath,
+      loaded_at_round: 0,
+      token_count: Math.ceil(file.content.length / 4),
+      content_hash: file.contentHash,
+      snapshot_id: runtime.repository_snapshot_id
+    }));
     const rng = random(Number(seed) >>> 0);
     const seats = this.config.seats.slice(0, 8);
     let stopReason = 'fixed_round_limit';
@@ -394,6 +1080,8 @@ export class ExploreDesignEngine {
     try {
       if (!problem?.trim()) throw new Error('ExploreDesign problem 不能为空');
       if (!seats.length) throw new Error('Varina 至少需要一个创意席位');
+      await this.runDecomposition({ runtime, runId, loadedFiles });
+      await this.runSubproblemExpansion({ runtime, runId });
       for (let round = 1; round <= runtime.max_rounds; round++) {
         this.signal?.throwIfAborted();
         runtime.current_round = round;
@@ -563,7 +1251,8 @@ export class ExploreDesignEngine {
               agent_hypotheses: runtime.agent_hypotheses,
               board: runtime.current_board,
               fact_ledger: runtime.fact_ledger,
-              rejected_directions: runtime.rejected_directions
+              rejected_directions: runtime.rejected_directions,
+              baseline_solutions: runtime.baseline_solutions
             }) }
           ], schema: assemblySchema, generation: generationFor(this.config, 'varina_assembly'),
           context: { board: runtime.current_board, fact_ledger: runtime.fact_ledger }, logicalId: `${runId}:assembly`,
@@ -587,8 +1276,12 @@ export class ExploreDesignEngine {
       meeting_board: runtime.current_board, fact_ledger: runtime.fact_ledger,
       rejected_directions: runtime.rejected_directions, solutions,
       unresolved_questions: unresolvedQuestions, degradations: runtime.degradations,
+      decomposition: runtime.decomposition ?? null,
+      subproblem_expansion: runtime.subproblem_expansion ?? null,
       round_records: runtime.round_records, seat_responses: runtime.seat_responses,
       board_history: runtime.board_history,
+      baseline_point_ids: runtime.baseline_point_ids,
+      baseline_solutions: runtime.baseline_solutions,
       repository_snapshot_id: runtime.repository_snapshot_id,
       loaded_files_manifest: loadedFiles.map(file => ({ file_path: file.filePath, content_hash: file.contentHash, loaded_at: new Date().toISOString(), snapshot_id: runtime.repository_snapshot_id })),
       original_user_request: originalRequest,

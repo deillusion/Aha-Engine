@@ -30,7 +30,7 @@ function getFolderName(normalizedPath) {
 const state = {
   sessions: [], sessionCounts: { live: 0, mock: 0 }, activeMode: 'live',
   session: null, source: null, config: null, polling: false,
-  activities: [], ahaTabs: {}, folder: null, pendingMessage: '',
+  activities: [], ahaTabs: {}, subproblemSelections: {}, folder: null, pendingMessage: '',
   ahaEnabled: (localStorage.getItem('varina_enabled') ?? localStorage.getItem('aha_enabled')) !== 'false',
   editingConfig: null,
   userScrolledUp: false,
@@ -479,6 +479,7 @@ function viewRun(record, runtime = null) {
     unresolved: handoff.unresolved_questions ?? source.unresolved_questions ?? record?.unresolved_questions ?? [],
     rejected: handoff.rejected_directions ?? source.rejected_directions ?? record?.rejected_directions ?? [],
     degradations: handoff.degradations ?? source.degradations ?? record?.degradations ?? [],
+    subproblemExpansion: handoff.subproblem_expansion ?? source.subproblem_expansion ?? record?.subproblem_expansion ?? null,
     roundRecords: handoff.round_records ?? source.round_records ?? record?.round_records ?? [],
     seatResponses: handoff.seat_responses ?? source.seat_responses ?? record?.seat_responses ?? [],
     partialSeatResponses: source.partial_seat_responses ?? [],
@@ -508,7 +509,133 @@ function renderOverview(run) {
 
 function renderBoard(run) {
   const points = (run.board?.points ?? []).filter(point => point.status === 'active');
-  return points.length ? `<div class="card-grid">${points.map(point => `<article class="data-card point-card"><header><span>${escapeHtml(point.id)}</span><span>rev ${point.revision}</span></header><span class="type-chip">${escapeHtml(point.type)}</span><p>${escapeHtml(point.text)}</p><footer><strong>失效边界</strong>${escapeHtml(point.failure_condition)}</footer></article>`).join('')}</div>` : '<div class="workbench-empty">观点板尚未产生原子观点。</div>';
+  return points.length ? `<div class="card-grid">${points.map(point => {
+    const isSubproblem = point.type === 'subproblem';
+    const footer = isSubproblem
+      ? '<footer><strong>用途</strong>供后续席位分别发散并重新组合</footer>'
+      : `<footer>${point.parent_subproblem_id ? `<strong>来源子问题</strong>${escapeHtml(point.parent_subproblem_id)}<br>` : ''}<strong>失效边界</strong>${escapeHtml(point.failure_condition)}</footer>`;
+    return `<article class="data-card point-card ${isSubproblem ? 'subproblem-card' : ''}"><header><span>${escapeHtml(point.id)}</span><span>rev ${point.revision}</span></header><span class="type-chip">${isSubproblem ? '子问题' : escapeHtml(point.type)}</span><p>${escapeHtml(point.text)}</p>${footer}</article>`;
+  }).join('')}</div>` : '<div class="workbench-empty">观点板尚未产生原子观点。</div>';
+}
+
+function renderSubproblemExpansion(run) {
+  const expansion = run.subproblemExpansion;
+  const subproblems = (run.board?.points ?? []).filter(point => point.status === 'active' && point.type === 'subproblem');
+  if (!subproblems.length) return '<div class="workbench-empty">问题拆解尚未产生可发散的子问题。</div>';
+
+  const recordById = new Map((expansion?.records ?? []).map(record => [record.subproblem_id, record]));
+  const configuredN2 = expansion?.answers_per_subproblem
+    ?? state.config?.liveConfig?.subproblemExpansion?.answersPerSubproblem
+    ?? state.config?.mockConfig?.subproblemExpansion?.answersPerSubproblem
+    ?? 2;
+  const remembered = state.subproblemSelections[run.id];
+  const selected = subproblems.some(point => point.id === remembered) ? remembered : subproblems[0].id;
+  state.subproblemSelections[run.id] = selected;
+  const selectedPoint = subproblems.find(point => point.id === selected);
+  const selectedRecord = recordById.get(selected);
+  const linkedPoints = (run.board?.points ?? []).filter(point =>
+    point.status === 'active' && point.parent_subproblem_id === selected
+  );
+
+  const subproblemCards = subproblems.map((point, index) => {
+    const record = recordById.get(point.id);
+    const answers = record?.answers ?? [];
+    const completed = answers.filter(answer => answer.status === 'completed').length;
+    const failed = answers.filter(answer => answer.status === 'failed').length;
+    const running = answers.filter(answer => answer.status === 'running').length;
+    const expected = answers.length || configuredN2;
+    const extracted = (run.board?.points ?? []).filter(item => item.status === 'active' && item.parent_subproblem_id === point.id).length;
+    const statusText = running
+      ? `${completed}/${expected} 已完成`
+      : record
+        ? `${completed} 完成${failed ? ` · ${failed} 失败` : ''}`
+        : '等待回答';
+    return `
+      <button type="button" class="subproblem-choice-card ${point.id === selected ? 'selected' : ''} ${running ? 'running' : ''}" data-subproblem-select="${escapeHtml(point.id)}" data-run-id="${escapeHtml(run.id)}">
+        <span class="subproblem-choice-index">${String(index + 1).padStart(2, '0')}</span>
+        <span class="subproblem-choice-id">${escapeHtml(point.id)}</span>
+        <strong>${escapeHtml(point.text)}</strong>
+        <span class="subproblem-choice-meta">
+          <span>${escapeHtml(statusText)}</span>
+          <span>${extracted} 个入板观点</span>
+        </span>
+      </button>`;
+  }).join('');
+
+  const answerSlots = selectedRecord?.answers ?? Array.from({ length: configuredN2 }, (_, index) => ({
+    answer_index: index + 1,
+    seat_id: '待分配',
+    model_id: 'auto',
+    status: 'waiting',
+    candidate_ids: []
+  }));
+  const answerCards = answerSlots.map(answer => {
+    const transientElements = Array.isArray(answer.elements) ? answer.elements : [];
+    const persistedElements = linkedPoints.filter(point =>
+      (point.source_candidate_ids ?? []).some(id => (answer.candidate_ids ?? []).includes(id))
+    );
+    const elements = persistedElements.length ? persistedElements : transientElements;
+    const status = answer.status ?? 'waiting';
+    const statusLabel = status === 'completed' ? '已完成' : status === 'failed' ? '失败' : status === 'running' ? '回答中' : '等待启动';
+    let body;
+    if (status === 'running') {
+      body = `<div class="subanswer-running"><span class="activity-pulse"></span>正在独立回答当前子问题并提取原子元素…</div>`;
+    } else if (status === 'failed') {
+      body = `<div class="subanswer-error"><strong>该席位未完成</strong><span>${escapeHtml(answer.error || '模型调用失败')}</span></div>`;
+    } else if (status === 'completed') {
+      body = elements.length ? `<div class="subanswer-elements">${elements.map(element => `
+        <article class="subanswer-element-card">
+          <header><span>${escapeHtml(element.id ?? element.candidate_id ?? '候选')}</span><span>${escapeHtml(element.type ?? '观点')}</span></header>
+          <p>${escapeHtml(element.text)}</p>
+          <footer><strong>失效边界</strong>${escapeHtml(element.failure_condition)}</footer>
+        </article>`).join('')}</div>` : '<div class="subanswer-empty">回答完成，但没有产生新的入板元素，或内容与已有观点完全相同。</div>';
+    } else {
+      body = '<div class="subanswer-empty">等待该子问题进入回答阶段。</div>';
+    }
+    return `
+      <article class="subanswer-seat-card ${escapeHtml(status)}">
+        <div class="subanswer-seat-head">
+          <div><span class="subanswer-seat-number">回答席位 ${answer.answer_index}</span><strong>${getModelIcon(answer.model_id)} ${escapeHtml(answer.model_id)}</strong></div>
+          <span class="subanswer-status ${escapeHtml(status)}">${escapeHtml(statusLabel)}</span>
+        </div>
+        <div class="subanswer-seat-source">调度席位：${escapeHtml(answer.seat_id)}</div>
+        ${body}
+      </article>`;
+  }).join('');
+
+  const success = expansion?.successful_answers ?? 0;
+  const failed = expansion?.failed_answers ?? 0;
+  const total = expansion?.total_requests ?? subproblems.length * configuredN2;
+  return `
+    <div class="subproblem-expansion-view">
+      <section class="subproblem-stage-head">
+        <div>
+          <span class="step-tag">D2 发散</span>
+          <h3>逐个子问题独立回答</h3>
+          <p>先选择一个子问题，再查看为它并行启动的回答席位及入板元素。</p>
+        </div>
+        <div class="subproblem-stage-stats">
+          <span>${subproblems.length} 个子问题</span><span>n2 = ${configuredN2}</span><span>${success}/${total} 完成${failed ? ` · ${failed} 失败` : ''}</span>
+        </div>
+      </section>
+
+      <section class="subproblem-scroll-section">
+        <div class="scroll-section-title"><strong>子问题</strong><span>横向滑动 · 点击切换</span></div>
+        <div class="subproblem-horizontal-scroll" data-scroll-id="scroll-subproblems-${escapeHtml(run.id)}">
+          ${subproblemCards}
+        </div>
+      </section>
+
+      <section class="subproblem-scroll-section answers">
+        <div class="scroll-section-title">
+          <div><strong>${escapeHtml(selectedPoint.id)} 的回答席位</strong><p>${escapeHtml(selectedPoint.text)}</p></div>
+          <span>${answerSlots.length} 个席位 · ${linkedPoints.length} 个入板观点</span>
+        </div>
+        <div class="subanswer-horizontal-scroll" data-scroll-id="scroll-subanswers-${escapeHtml(run.id)}-${escapeHtml(selected)}">
+          ${answerCards}
+        </div>
+      </section>
+    </div>`;
 }
 
 function renderFacts(run) {
@@ -723,9 +850,11 @@ function renderExplorePromptTab(run) {
 
 function renderAhaWorkspace(input, live = false, openDetails = new Set()) {
   const run = input.board ? input : viewRun(input);
-  const defaultTab = 'rounds';
+  const defaultTab = run.subproblemExpansion ? 'subproblems' : 'rounds';
   const activeTab = state.ahaTabs[run.id] ?? defaultTab;
+  const subproblemCount = run.board?.points?.filter(point => point.status === 'active' && point.type === 'subproblem').length ?? 0;
   const tabs = [
+    ['subproblems', `子问题发散 (${subproblemCount})`],
     ['rounds', `4×2 席位推演 (${run.roundRecords?.length || run.currentRound || 0}轮)`],
     ['overview', `装配方案 (${run.solutions?.length ?? 0})`],
     ['facts', `事实账本 (${run.facts?.length ?? 0})`],
@@ -736,6 +865,7 @@ function renderAhaWorkspace(input, live = false, openDetails = new Set()) {
   const content = activeTab === 'overview' ? renderOverview(run)
     : activeTab === 'facts' ? renderFacts(run)
     : activeTab === 'board' ? renderBoard(run)
+    : activeTab === 'subproblems' ? renderSubproblemExpansion(run)
     : activeTab === 'rejected' ? renderRejected(run)
     : activeTab === 'prompt' ? renderExplorePromptTab(run)
     : renderRounds(run, live);
@@ -1060,7 +1190,7 @@ function renderMessages() {
     const bodyMarkup = message.content ? `
       <article class="message assistant ${message.partial ? 'partial' : ''}">
         <div class="message-body markdown-body">${renderMarkdown(message.content)}</div>
-        ${message.confirmation ? `<div class="confirm-card"><p>${escapeHtml(message.confirmation.question)}</p><button class="primary" data-confirm="${index}">启动全新 Varina</button></div>` : ''}
+        ${message.confirmation ? `<div class="confirm-card"><p>${escapeHtml(message.confirmation.question)}</p><button data-varina-confirm="${index}" data-accepted="false">不启动</button><button class="primary" data-varina-confirm="${index}" data-accepted="true">仍然启动 Varina</button></div>` : ''}
       </article>
     ` : '';
     return `${prefix}${stepsMarkup}${ahaMarkup}${bodyMarkup}`;
@@ -1138,7 +1268,8 @@ function render() {
   renderActivity();
   updateVarinaToggle();
   updateComposerModel();
-  setRunning(state.session?.status === 'running', state.session?.status === 'running' ? '处理中' : state.session?.status === 'failed' ? '上轮失败' : '就绪');
+  const busy = ['running', 'baseline_complete', 'evaluating_varina', 'running_varina'].includes(state.session?.status);
+  setRunning(busy, busy ? (state.session?.status === 'running' ? '处理中' : 'Varina 探索中') : state.session?.status === 'failed' ? '上轮失败' : '就绪');
 }
 
 async function loadSessions() {
@@ -1234,6 +1365,8 @@ function connectEvents(sessionId) {
         };
         renderMessages();
       }
+    } else if (data.event === 'agent_baseline_done') {
+      void refreshSession(sessionId);
     } else if (data.event === 'agent_done') {
       delete state.session.active_turn;
       void refreshSession(sessionId);
@@ -1377,9 +1510,8 @@ async function sendMessage(message) {
   const before = state.session.messages.length;
   $('#message-input').value = '';
   state.activities = ['正在理解你的请求…'];
-  // Slash commands such as /init and /init --refresh must reach the Agent unchanged.
-  // The Varina toggle only adds an explicit exploration prefix to ordinary messages.
-  const outboundMessage = (state.ahaEnabled && !trimmed.startsWith('/')) ? `/varina ${trimmed}` : trimmed;
+  // The toggle is transport metadata. It must never rewrite the ordinary ReAct input.
+  const outboundMessage = trimmed;
   state.session.messages.push({ role: 'user', content: outboundMessage, created_at: new Date().toISOString() });
   state.session.status = 'running';
   state.session.active_turn = { turn: (state.session.current_turn || 0) + 1, steps: [] };
@@ -1397,7 +1529,9 @@ async function sendMessage(message) {
     if (state.session?.session_id !== sessionId) return;
     state.session = fresh;
     render();
-    if (fresh.messages.length >= before + 2 && fresh.messages.at(-1)?.role === 'assistant' && fresh.status !== 'running') break;
+    if (fresh.messages.length >= before + 2
+      && fresh.messages.at(-1)?.role === 'assistant'
+      && ['idle', 'failed', 'cancelled', 'awaiting_varina_confirmation'].includes(fresh.status)) break;
   }
   delete state.session.active_turn;
   state.activities = [];
@@ -1500,6 +1634,11 @@ function syncFieldsToState() {
     const seat = (state.editingConfig.seats || []).find(s => s.id === seatId);
     if (seat) seat.modelId = select.value;
   });
+  const answersPerSubproblem = document.querySelector('#cfg-answers-per-subproblem');
+  if (answersPerSubproblem) {
+    state.editingConfig.subproblemExpansion ??= {};
+    state.editingConfig.subproblemExpansion.answersPerSubproblem = Number(answersPerSubproblem.value);
+  }
 }
 
 function renderSettingsModalContent() {
@@ -1650,6 +1789,13 @@ function renderSettingsModalContent() {
         <h4 style="margin:10px 0 0;font-size:12px;color:var(--ink)">Varina 8 席位推演分配</h4>
         <div class="role-assign-grid">
           ${seatsHtml}
+        </div>
+        <h4 style="margin:10px 0 0;font-size:12px;color:var(--ink)">子问题独立发散</h4>
+        <div class="role-assign-grid">
+          <div class="role-assign-item">
+            <label title="每个拆解后的子问题分别调用多少个回答席位">每个子问题的回答数 n2</label>
+            <input id="cfg-answers-per-subproblem" type="number" min="1" max="8" step="1" value="${escapeHtml(c.subproblemExpansion?.answersPerSubproblem ?? 2)}">
+          </div>
         </div>
       </div>
     </details>
@@ -1877,8 +2023,16 @@ $('#messages').addEventListener('click', event => {
   const suggestion = event.target.closest('[data-suggestion]');
   if (suggestion) { $('#message-input').value = suggestion.dataset.suggestion; $('#message-input').focus(); }
   if (event.target.closest('[data-open-workspace]')) openFolderDialog().catch(error => toast(error.message));
-  const confirmation = event.target.closest('[data-confirm]');
-  if (confirmation) { const message = state.session.messages[Number(confirmation.dataset.confirm)]; sendMessage(`/varina ${message.confirmation.original_problem}`).catch(error => toast(error.message)); }
+  const confirmation = event.target.closest('[data-varina-confirm]');
+  if (confirmation) {
+    const message = state.session.messages[Number(confirmation.dataset.varinaConfirm)];
+    const accepted = confirmation.dataset.accepted === 'true';
+    api(`/api/agent/sessions/${state.session.session_id}/varina-confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmation_id: message.confirmation.id, accepted })
+    }).then(() => refreshSession(state.session.session_id)).catch(error => toast(error.message));
+  }
   const copyHeroPromptBtn = event.target.closest('[data-copy-hero-prompt]');
   if (copyHeroPromptBtn) {
     event.stopPropagation();
@@ -1888,6 +2042,12 @@ $('#messages').addEventListener('click', event => {
   const tab = event.target.closest('[data-aha-tab]');
   if (tab) {
     state.ahaTabs[tab.dataset.runId] = tab.dataset.ahaTab;
+    state.userScrolledUp = true;
+    renderMessages();
+  }
+  const subproblem = event.target.closest('[data-subproblem-select]');
+  if (subproblem) {
+    state.subproblemSelections[subproblem.dataset.runId] = subproblem.dataset.subproblemSelect;
     state.userScrolledUp = true;
     renderMessages();
   }
@@ -1923,7 +2083,7 @@ $('#cancel-turn').addEventListener('click', async () => {
 });
 
 window.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && state.session?.status === 'running') {
+  if (event.key === 'Escape' && ['running', 'baseline_complete', 'evaluating_varina', 'running_varina'].includes(state.session?.status)) {
     event.preventDefault();
     $('#cancel-turn')?.click();
   }

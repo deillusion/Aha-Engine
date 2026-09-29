@@ -134,6 +134,31 @@
       "max_output_tokens": 1024
     }
   },
+  "decisionProviders": {
+    "jev": {
+      "enabled": true,
+      "baseUrl": "https://api.typesafe.ai",
+      "model": "jev-latest",
+      "apiKeyEnv": "TYPESAFE_API_KEY",
+      "timeoutMs": 30000,
+      "retries": 2,
+      "askProbabilityThreshold": 0.9,
+      "askConfidenceThreshold": 0.8,
+      "subproblemDuplicateThreshold": 0.85
+    }
+  },
+  "decomposition": {
+    "enabled": true,
+    "seatCount": 5,
+    "maxRounds": 3,
+    "maxQuestionsPerSeat": 4,
+    "maxAcceptedSubproblems": 20
+  },
+  "subproblemExpansion": {
+    "enabled": true,
+    "answersPerSubproblem": 2,
+    "maxElementsPerAnswer": 3
+  },
   "retries": 2,
   "timeoutMs": 180000,
   "minimumCreativeRatio": 0.5,

@@ -3,6 +3,7 @@ import { chatCompletion } from '../provider.mjs';
 import { operators } from '../operators.mjs';
 import { domainCatalog } from '../domain_operators.mjs';
 import { EXPERIMENTS } from './experiment_catalog.mjs';
+import { getJevApiKey } from '../decision/jev_gateway.mjs';
 
 function sanitizedConfig(config) {
   if (!config) return null;
@@ -15,6 +16,16 @@ function sanitizedConfig(config) {
     const { apiKey, ...rest } = model;
     return { ...rest, hasKey, maskedKey, keySource };
   });
+  if (cloned.decisionProviders?.jev) {
+    const raw = config.decisionProviders.jev;
+    const rawKey = getJevApiKey(config);
+    const { apiKey, ...safe } = cloned.decisionProviders.jev;
+    cloned.decisionProviders.jev = {
+      ...safe,
+      hasKey: rawKey !== null,
+      keySource: raw.apiKey ? 'config' : (raw.apiKeyEnv && process.env[raw.apiKeyEnv] ? 'env' : 'none')
+    };
+  }
   return cloned;
 }
 

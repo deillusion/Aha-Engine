@@ -704,6 +704,59 @@ code { padding: 2px 6px; border-radius: 4px; background: #edf3e9; color: var(--a
 
 .aha-content, .varina-content { min-height: 160px; padding: 16px 0 8px; background: transparent; }
 
+/* 子问题 → n2 回答席位：两层水平 ScrollView */
+.subproblem-expansion-view { display: flex; flex-direction: column; gap: 20px; }
+.subproblem-stage-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 4px 0 2px; }
+.subproblem-stage-head > div:first-child { display: grid; grid-template-columns: auto 1fr; column-gap: 10px; align-items: center; }
+.subproblem-stage-head h3 { margin: 0; color: var(--ink); font-size: 15px; }
+.subproblem-stage-head p { grid-column: 2; margin: 3px 0 0; color: var(--muted); font-size: 11px; }
+.subproblem-stage-stats { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.subproblem-stage-stats span { padding: 4px 8px; border: 1px solid #dce7d7; border-radius: 999px; background: #f4f8f1; color: #47604d; font-size: 10.5px; white-space: nowrap; }
+.subproblem-scroll-section { display: flex; min-width: 0; flex-direction: column; gap: 8px; }
+.subproblem-scroll-section.answers { padding-top: 17px; border-top: 1px dashed #dfe8da; }
+.scroll-section-title { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; color: var(--muted); font-size: 10.5px; }
+.scroll-section-title strong { display: block; color: var(--ink); font-size: 12.5px; }
+.scroll-section-title p { max-width: 780px; margin: 3px 0 0; color: #53675a; font-size: 11px; line-height: 1.45; }
+.subproblem-horizontal-scroll, .subanswer-horizontal-scroll { display: flex; width: 100%; min-width: 0; gap: 12px; padding: 2px 2px 11px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scroll-snap-type: x proximity; touch-action: pan-x; scrollbar-width: thin; scrollbar-color: #b9cbb3 #edf3e9; }
+.subproblem-horizontal-scroll::-webkit-scrollbar, .subanswer-horizontal-scroll::-webkit-scrollbar { height: 8px; }
+.subproblem-horizontal-scroll::-webkit-scrollbar-track, .subanswer-horizontal-scroll::-webkit-scrollbar-track { border-radius: 999px; background: #edf3e9; }
+.subproblem-horizontal-scroll::-webkit-scrollbar-thumb, .subanswer-horizontal-scroll::-webkit-scrollbar-thumb { border-radius: 999px; background: #b9cbb3; }
+.subproblem-choice-card { position: relative; display: flex; flex: 0 0 290px; min-height: 142px; padding: 14px; flex-direction: column; align-items: stretch; gap: 8px; border: 1px solid #dde7d8; border-radius: 11px; background: #fff; color: var(--ink); text-align: left; scroll-snap-align: start; transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
+.subproblem-choice-card:hover { border-color: #a9c3a2; box-shadow: 0 4px 14px rgba(45, 77, 53, .07); transform: translateY(-1px); }
+.subproblem-choice-card.selected { border-color: #4f815c; background: #f8fcf5; box-shadow: 0 0 0 2px rgba(79, 129, 92, .12); }
+.subproblem-choice-card.running { border-style: dashed; }
+.subproblem-choice-index { position: absolute; top: 12px; right: 13px; color: #a8b5a5; font: 10px var(--mono); }
+.subproblem-choice-id { align-self: flex-start; padding: 2px 6px; border-radius: 4px; background: #e8f1e3; color: #365e41; font: 700 10px var(--mono); }
+.subproblem-choice-card strong { padding-right: 18px; font-size: 12.5px; line-height: 1.55; font-weight: 650; }
+.subproblem-choice-meta { display: flex; margin-top: auto; align-items: center; justify-content: space-between; gap: 8px; color: #778777; font-size: 9.5px; }
+.subanswer-seat-card { display: flex; flex: 0 0 370px; min-height: 270px; padding: 14px; flex-direction: column; gap: 10px; border: 1px solid #dde6da; border-radius: 11px; background: #fff; scroll-snap-align: start; }
+.subanswer-seat-card.running { border-color: #8fb487; background: #fcfffa; box-shadow: inset 0 2px 0 #8fb487; }
+.subanswer-seat-card.failed { border-color: #edcfca; background: #fffafa; }
+.subanswer-seat-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.subanswer-seat-head > div { display: flex; flex-direction: column; gap: 3px; }
+.subanswer-seat-head strong { color: var(--ink); font-size: 12px; }
+.subanswer-seat-number { color: #6c806f; font: 10px var(--mono); }
+.subanswer-status { padding: 2px 7px; border-radius: 999px; background: #eef3ea; color: #68796b; font-size: 9.5px; white-space: nowrap; }
+.subanswer-status.running { background: #e5f1df; color: #376745; }
+.subanswer-status.completed { background: #e4f0e1; color: #2f683c; }
+.subanswer-status.failed { background: #f9e5e2; color: #984b43; }
+.subanswer-seat-source { padding-bottom: 8px; border-bottom: 1px solid #edf1e9; color: #849085; font-size: 9.5px; }
+.subanswer-running, .subanswer-empty, .subanswer-error { display: flex; min-height: 150px; padding: 16px; align-items: center; justify-content: center; border-radius: 8px; background: #f7faf5; color: #718073; font-size: 11px; line-height: 1.5; text-align: center; }
+.subanswer-error { flex-direction: column; gap: 6px; background: #fff3f1; color: #98534d; }
+.subanswer-elements { display: flex; flex-direction: column; gap: 8px; }
+.subanswer-element-card { padding: 10px 11px; border: 1px solid #e2eade; border-left: 3px solid #638e6a; border-radius: 7px; background: #fbfdf9; }
+.subanswer-element-card header { display: flex; justify-content: space-between; gap: 8px; color: #6c7e70; font: 9.5px var(--mono); }
+.subanswer-element-card p { margin: 7px 0; color: #25382a; font-size: 11.5px; line-height: 1.55; }
+.subanswer-element-card footer { padding-top: 6px; border-top: 1px dashed #e1e9dd; color: #856b48; font-size: 10px; line-height: 1.45; }
+.subanswer-element-card footer strong { display: block; margin-bottom: 2px; color: #9a7a4f; font-size: 9px; }
+@media(max-width: 650px) {
+  .subproblem-stage-head { flex-direction: column; }
+  .subproblem-stage-stats { justify-content: flex-start; }
+  .scroll-section-title { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .subproblem-choice-card { flex-basis: min(82vw, 300px); }
+  .subanswer-seat-card { flex-basis: min(88vw, 380px); }
+}
+
 /* 4×2 八席位卡片矩阵 */
 .seats-grid-4x2 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 8px; }
 @media(max-width: 1200px) { .seats-grid-4x2 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

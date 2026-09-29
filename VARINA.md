@@ -13,7 +13,7 @@
 
 **What it is not:**
 - 不是固定问题、顺序多轮、Chair 唯一裁决的僵化 Workflow（旧 engine/RunService 仅为兼容与历史读取路径）
-- ExploreDesign 不是顶层交互循环，而是主 Agent 治理下的一个重型工具
+- ExploreDesign 不是主 Agent 在 ReAct 中调用的工具，而是常规回答完成后的增量探索阶段
 - Assembly 不评分、不排名、不选唯一赢家
 - 不是带 Git 依赖或第三方 npm 运行时的工程
 
@@ -23,15 +23,15 @@
 
 ### 日常对话与有界工具循环
 - Purpose: 低延迟响应普通问答、资料检索与局部方案调整
-- Flow: 用户消息 → AgentSession 模型⇄工具按唯一 ID 1:1 迭代 → 受 maxToolIterations 与 AbortSignal 限制 → 返回对话
+- Flow: 用户消息 → AgentSession 模型⇄工具按唯一 ID 1:1 迭代 → 常规回答先落盘并展示 → 按开关决定是否进入后置探索
 
 ### /init 项目认知初始化
 - Purpose: 生成工作区根 VARINA.md 作为 Level-1 系统心智模型与领域本体
-- Flow: 读取少量高权威资料 → 归纳身份/运行方式/核心概念/护栏/验证路径 → 自动备份旧版并安全替换
+- Flow: 动态追加 init 专用 prompt 与工具集 → 读取少量高权威资料 → 归纳身份/运行方式/核心概念/护栏/验证路径 → 自动备份旧版并安全替换
 
 ### ExploreDesign 深度推演
 - Purpose: 对复杂机制冲突展开多视角发散并产出可复核成果
-- Flow: VarinaGateController 门控 → 冻结公共前缀 → 8 席位并发发散 → Grounder 假设核查 → EvidenceVerifier 物理重读 → Dedup 结晶 → Assembly 正交装配
+- Flow: 常规回答 → 后置相关性门控 → 回答解析为 round-0 观点板 → 冻结公共前缀 → 8 席位并发发散 → Grounder 假设核查 → EvidenceVerifier 物理重读 → Dedup 结晶 → Assembly 正交装配 → 吸收发散结果重写完整终稿
 
 ### 会话持久化与恢复
 - Purpose: 按 live/mock 物理隔离审计并支持中断恢复
@@ -40,7 +40,7 @@
 ## 3. Core Domain Ontology
 
 ### ExploreDesign（Varina 引擎）
-- Definition: 主 Agent 治理下的重型推演工具：8 席位并发发散、事实验真、去重与正交装配；历史别名 Aha 仍作兼容名保留。
+- Definition: 常规 ReAct 交付后的重型增量推演阶段：以常规回答为初始观点板，执行 8 席位并发发散、事实验真、去重与正交装配；历史别名 Aha 仍作兼容名保留。
 - Ecosystem role: 承担机制/架构难题的多视角发散，产出观点板与事实账本，而非日常对话。
 - Do not confuse with: 顶层交互循环、旧 RunService 工作流、Chair 裁决器。
 
@@ -66,7 +66,7 @@
 
 ### Structural Examples
 - 冻结公共前缀：同轮全部席位共享逐字一致的输入包（冻结问题、硬约束、有效事实、观点板、repository_snapshot_id），席位特有算子仅追加于其后。
-- 门控：会话内首次可自动放行，重复议题需确认或显式 /varina（兼容 /aha），超时按拒绝处理。
+- 后置门控：开关不影响普通 ReAct；不确定时默认继续探索，只有显然无关的请求才询问是否强制启动，确认状态持久化且不设超时。
 
 ## 4. Invariants & Negative Guardrails
 
@@ -99,7 +99,7 @@
 - `ARCHITECTURE.md`: 总体架构与各层不变式：依赖方向、Agent 循环不变式、上下文预算阈值、重试判据、Host 安全边界、引擎管线与兼容边界。
 - `README.md`: 面向使用者的产品总览、三种入口、配置优先级、Web 工作台功能与数据持久化结构（含历史命名，需与实现核对）。
 - `src/varina/explore_design.mjs`: ExploreDesign 引擎实现：快照 Hash、冻结公共前缀、席位响应规范化与候选/核验构造。
-- `src/agent/gate.mjs`: VarinaGateController 触发门控：显式指令、首次自动、重复确认与超时按拒绝。
+- `src/agent/gate.mjs`: VarinaGateController 后置门控：仅把 JEV 判定为显然无关的请求转为持久化确认，其余默认启动。
 - `src/host/node_fs_host.mjs`: 工作区访问端口实现：路径双重越界校验、备份与落盘目录（.varina/）、listFiles 跳过规则。
 - `src/agent/project_manifest.mjs`: VARINA.md 的 manifest 规范化与 Markdown 渲染事实实现（字段长度与条目数约束）。
 

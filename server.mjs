@@ -103,7 +103,7 @@ export async function createApp({
           return json(400, { error: e.message });
         }
       }
-      const agentMatch = route.match(/^\/api\/agent\/sessions\/(session-[a-zA-Z0-9-]+)(?:\/(messages|cancel|stream))?$/);
+      const agentMatch = route.match(/^\/api\/agent\/sessions\/(session-[a-zA-Z0-9-]+)(?:\/(messages|cancel|stream|varina-confirm))?$/);
       if (agentMatch) {
         const [, sessionId, action] = agentMatch;
         if (!action && req.method === 'GET') return json(200, await agentService.get(sessionId));
@@ -123,6 +123,18 @@ export async function createApp({
         if (action === 'cancel' && req.method === 'POST') {
           try { return json(202, agentService.cancel(sessionId)); }
           catch (e) { if (e instanceof AgentTurnConflictError) return json(409, { error: e.message }); throw e; }
+        }
+        if (action === 'varina-confirm' && req.method === 'POST') {
+          try {
+            const input = await body(req);
+            if (typeof input.confirmation_id !== 'string') return json(400, { error: 'confirmation_id 不能为空' });
+            await agentService.startVarinaConfirmation(sessionId, input.confirmation_id, input.accepted === true);
+            return json(202, { session_id: sessionId, status: input.accepted === true ? 'running_varina' : 'idle' });
+          } catch (e) {
+            if (e instanceof AgentTurnConflictError) return json(409, { error: e.message });
+            if (e.code === 'ENOENT') return json(404, { error: '会话不存在' });
+            throw e;
+          }
         }
         if (action === 'stream' && req.method === 'GET') {
           res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });

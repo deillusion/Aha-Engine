@@ -1,6 +1,21 @@
 import { randomUUID } from 'node:crypto';
-import { AhaGateController, VarinaGateController } from './gate.mjs';
-import { MAIN_AGENT_SYSTEM_PROMPT, projectContextMessage, trustedStateMessage } from './prompts.mjs';
+import { VarinaGateController } from './gate.mjs';
+import {
+  BASELINE_EXTRACTION_SYSTEM_PROMPT,
+  INIT_PROJECT_SYSTEM_PROMPT,
+  MAIN_AGENT_SYSTEM_PROMPT,
+  VARINA_DELTA_SYSTEM_PROMPT,
+  VARINA_GATE_SYSTEM_PROMPT,
+  projectContextMessage,
+  trustedStateMessage
+} from './prompts.mjs';
+import {
+  AGENT_TOOL_SPECS,
+  INIT_AGENT_TOOL_SPECS,
+  baselineExtractionSchema,
+  varinaDeltaSchema,
+  varinaGateSchema
+} from './schemas.mjs';
 // agentTurnSchema removed: Main agent now uses native tool calling / resilient ReAct
 import { generationFor } from './model_gateway.mjs';
 import { applyToolResultBudget, renderToolResults } from './tool_result_budget.mjs';
@@ -116,11 +131,12 @@ async function refreshLoadedFacts(session, host) {
 }
 
 export class AgentSession {
-  constructor({ state, host, store, gateway, config, signal, onEvent = () => {}, gate = new VarinaGateController(), maxToolIterations } = {}) {
+  constructor({ state, host, store, gateway, decisionGateway, config, signal, onEvent = () => {}, gate = new VarinaGateController(), maxToolIterations } = {}) {
     this.state = state;
     this.host = host;
     this.store = store;
     this.gateway = gateway;
+    this.decisionGateway = decisionGateway;
     this.config = config;
     this.signal = signal;
     this.onEvent = onEvent;
@@ -148,17 +164,17 @@ export class AgentSession {
     }
   }
 
-  modelMessages(currentUserMessage, projectContext = null) {
+  modelMessages(currentUserMessage, projectContext = null, { mode = 'normal' } = {}) {
     ensureMessageTurns(this.state.messages);
     const lastCompactedTurn = this.state.compaction?.last_compacted_turn ?? 0;
     const priorMessages = this.state.messages.slice(0, -1);
     const activePrior = lastCompactedTurn > 0
       ? priorMessages.filter(msg => (msg.turn ?? 0) > lastCompactedTurn)
       : priorMessages;
-    const prior = activePrior.map(message => ({ role: message.role, content: message.content }));
+    const prior = mode === 'init' ? [] : activePrior.map(message => ({ role: message.role, content: message.content }));
 
     const checkpointMessages = [];
-    if (this.state.compaction?.summary) {
+    if (mode === 'normal' && this.state.compaction?.summary) {
       checkpointMessages.push({
         role: 'system',
         content: `${CHECKPOINT_HEADER}\n${SUMMARY_PREFIX}\n\n${this.state.compaction.summary}`
@@ -167,19 +183,14 @@ export class AgentSession {
 
     const systemNotes = [];
     if (projectContext?.error) systemNotes.push({ role: 'system', content: `Notice: ${projectContext.error}` });
-    const enabled = this.turnEnableVarina ?? this.turnEnableAha;
-    if (enabled === false) {
-      systemNotes.push({ role: 'system', content: 'Notice: Varina deep exploration is currently DISABLED by the user for this turn. Do NOT call ExploreDesign. Answer questions directly in conversation, and use workspace tools (Read, Grep, Glob, Edit, Write) as requested.' });
-    } else if (enabled === true) {
-      systemNotes.push({ role: 'system', content: 'Notice: Varina deep exploration is ENABLED by the user for this turn. If the query involves game mechanics, creative system design, numerical boundaries, or architectural trade-offs, you may invoke ExploreDesign without requiring an explicit /varina command.' });
-    }
-    const projectMessage = projectContextMessage(projectContext);
+    const projectMessage = mode === 'normal' ? projectContextMessage(projectContext) : null;
     return [
       { role: 'system', content: MAIN_AGENT_SYSTEM_PROMPT },
+      ...(mode === 'init' ? [{ role: 'system', content: INIT_PROJECT_SYSTEM_PROMPT }] : []),
       ...(projectMessage ? [{ role: 'system', content: projectMessage }] : []),
       ...checkpointMessages,
       ...prior,
-      { role: 'system', content: trustedStateMessage(this.state) },
+      ...(mode === 'normal' ? [{ role: 'system', content: trustedStateMessage(this.state) }] : []),
       ...systemNotes,
       { role: 'user', content: currentUserMessage }
     ];
@@ -188,22 +199,27 @@ export class AgentSession {
   async turn(userMessage, { enable_varina, enable_aha } = {}) {
     assertString(userMessage, 'message', { max: 20000 });
     this.signal?.throwIfAborted();
-    this.turnEnableVarina = enable_varina ?? enable_aha;
-    this.turnEnableAha = this.turnEnableVarina;
-    delete this.state.pending_confirmation;
+    const rawUserMessage = userMessage.trim();
+    const init = initMode(rawUserMessage);
+    const commandRequested = /^\/(?:varina|aha)(?:\s+|$)/i.test(rawUserMessage);
+    const reactUserMessage = commandRequested ? originalRequest(rawUserMessage) : rawUserMessage;
+    const varinaRequested = !init && Boolean((enable_varina ?? enable_aha) || commandRequested);
+    this.turnReadPaths = new Set();
     await refreshLoadedFacts(this.state, this.host);
-    this.turnProjectContext = await this.loadProjectContext();
+    this.turnProjectContext = init ? null : await this.loadProjectContext();
     this.state.current_turn += 1;
-    if (this.state.title === '新会话' || this.state.title === 'CLI 会话') this.state.title = userMessage.trim().replace(/\s+/g, ' ').slice(0, 48);
+    if (this.state.title === '新会话' || this.state.title === 'CLI 会话') this.state.title = reactUserMessage.replace(/\s+/g, ' ').slice(0, 48);
 
     ensureMessageTurns(this.state.messages);
 
-    const compactionCheck = shouldCompactPreTurn({
-      messages: this.state.messages,
-      compaction: this.state.compaction,
-      config: this.config,
-      currentTurn: this.state.current_turn
-    });
+    const compactionCheck = init
+      ? { shouldCompact: false }
+      : shouldCompactPreTurn({
+          messages: this.state.messages,
+          compaction: this.state.compaction,
+          config: this.config,
+          currentTurn: this.state.current_turn
+        });
 
     if (compactionCheck.shouldCompact) {
       try {
@@ -256,7 +272,9 @@ export class AgentSession {
     this.state.messages.push({
       id: `msg-${randomUUID().slice(0, 8)}`,
       role: 'user',
-      content: userMessage.trim(),
+      content: reactUserMessage,
+      ...(rawUserMessage !== reactUserMessage ? { raw_content: rawUserMessage } : {}),
+      varina_requested: varinaRequested,
       created_at: new Date().toISOString(),
       turn: this.state.current_turn
     });
@@ -266,7 +284,9 @@ export class AgentSession {
       steps: []
     };
     await this.save();
-    const messages = this.modelMessages(userMessage.trim(), this.turnProjectContext);
+    const agentMode = init ? 'init' : 'normal';
+    const messages = this.modelMessages(reactUserMessage, this.turnProjectContext, { mode: agentMode });
+    const agentTools = init ? INIT_AGENT_TOOL_SPECS : AGENT_TOOL_SPECS;
     const seenCallIds = new Set();
     let finalMessage = '';
     let partial = false;
@@ -297,7 +317,8 @@ export class AgentSession {
         const output = await this.gateway.invoke({
           phase: 'agent_turn', modelId: this.config.roles.main ?? this.config.roles.chair,
           messages, generation: generationFor(this.config, 'agent_turn'),
-          context: { turn: this.state.current_turn, iteration, enable_varina: this.turnEnableVarina, enable_aha: this.turnEnableAha },
+          context: { turn: this.state.current_turn, iteration, agent_mode: agentMode },
+          tools: agentTools,
           logicalId: `${this.state.session_id}:T${this.state.current_turn}:I${iteration}`
         });
         thinkingStep.status = 'completed';
@@ -359,7 +380,7 @@ export class AgentSession {
             this.state.active_turn.steps.push(toolStep);
             await this.save();
           }
-          const result = await this.executeTool(call, userMessage.trim());
+          const result = await this.executeTool(call, reactUserMessage);
           toolStep.status = result.ok ? 'completed' : 'failed';
           toolStep.ok = result.ok;
           toolStep.result = result.result;
@@ -433,7 +454,7 @@ export class AgentSession {
         partial = true;
         finalMessage = `本轮达到 ${this.maxToolIterations} 次工具续轮上限，已保留当前会话和工具结果，但任务尚未完整结束。请缩小范围或继续下一条消息。`;
       }
-      this.state.status = 'idle';
+      this.state.status = 'baseline_complete';
     } catch (error) {
       this.state.status = this.signal?.aborted ? 'cancelled' : 'failed';
       finalMessage = this.signal?.aborted ? '本轮已取消，已完成的读取与 Varina 中间结果已经保留。' : `本轮未能完成：${cleanError(error).message}`;
@@ -447,17 +468,277 @@ export class AgentSession {
       steps: completedSteps,
       turn: this.state.current_turn
     };
-    const runs = this.state.varina_runs ?? this.state.aha_runs ?? [];
-    const turnRun = [...runs].reverse().find(run => run.turn_invoked === this.state.current_turn);
-    if (turnRun) {
-      assistantMessage.varina_run_id = turnRun.run_id;
-      assistantMessage.aha_run_id = turnRun.run_id;
-    }
-    if (this.state.pending_confirmation) assistantMessage.confirmation = this.state.pending_confirmation;
+    assistantMessage.message_kind = 'baseline';
     this.state.messages.push(assistantMessage);
+    await this.save();
+    this.onEvent({ event: 'agent_baseline_done', session_id: this.state.session_id, turn: this.state.current_turn, message: assistantMessage });
+
+    if (!partial && !init && varinaRequested) {
+      try {
+        const post = await this.runPostReact({
+          originalUserRequest: reactUserMessage,
+          baselineMessage: assistantMessage
+        });
+        if (post.confirmation) {
+          assistantMessage.confirmation = post.confirmation;
+          await this.save();
+          this.onEvent({ event: 'agent_done', session_id: this.state.session_id, turn: this.state.current_turn, message: assistantMessage });
+          return assistantMessage;
+        }
+        if (post.addendum) {
+          this.state.messages.push(post.addendum);
+          this.state.status = 'idle';
+          await this.save();
+          this.onEvent({ event: 'agent_done', session_id: this.state.session_id, turn: this.state.current_turn, message: post.addendum });
+          return post.addendum;
+        }
+      } catch (error) {
+        const postError = {
+          id: `msg-${randomUUID().slice(0, 8)}`,
+          role: 'assistant',
+          content: `常规回答已完成，但 Varina 后续探索未能完成：${cleanError(error).message}`,
+          created_at: new Date().toISOString(),
+          partial: true,
+          steps: [],
+          turn: this.state.current_turn,
+          message_kind: 'varina_addendum'
+        };
+        this.state.messages.push(postError);
+        this.state.status = 'idle';
+        await this.save();
+        this.onEvent({ event: 'agent_done', session_id: this.state.session_id, turn: this.state.current_turn, message: postError });
+        return postError;
+      }
+    }
+
+    this.state.status = ['failed', 'cancelled'].includes(this.state.status) ? this.state.status : 'idle';
     await this.save();
     this.onEvent({ event: 'agent_done', session_id: this.state.session_id, turn: this.state.current_turn, message: assistantMessage });
     return assistantMessage;
+  }
+
+  async evaluateVarinaNeed(originalUserRequest, baselineAnswer, sourceTurn = this.state.current_turn) {
+    try {
+      if (this.decisionGateway) {
+        return await this.decisionGateway.evaluateVarinaNeed({
+          originalUserRequest,
+          baselineAnswer,
+          logicalId: `${this.state.session_id}:T${sourceTurn}:varina-gate`
+        });
+      }
+      return await this.gateway.invoke({
+        phase: 'varina_gate',
+        modelId: this.config.roles.varina_gate ?? this.config.roles.dealer ?? this.config.roles.main ?? this.config.roles.chair,
+        messages: [
+          { role: 'system', content: VARINA_GATE_SYSTEM_PROMPT },
+          { role: 'user', content: JSON.stringify({ original_user_request: originalUserRequest, baseline_answer: baselineAnswer }) }
+        ],
+        schema: varinaGateSchema,
+        generation: generationFor(this.config, 'varina_gate'),
+        context: { original_user_request: originalUserRequest, baseline_answer: baselineAnswer },
+        logicalId: `${this.state.session_id}:T${sourceTurn}:varina-gate`
+      });
+    } catch (error) {
+      return { decision: 'START', reason: `gate_failed_defaults_to_start: ${String(error?.message ?? error).slice(0, 160)}` };
+    }
+  }
+
+  async extractBaseline(originalUserRequest, baselineAnswer, sourceTurn = this.state.current_turn) {
+    const validateExtraction = extraction => {
+      tracedUserConstraints(extraction.user_constraints, originalUserRequest);
+      for (const [index, point] of extraction.points.entries()) {
+        if (!point.text.trim()) throw new Error(`baseline points[${index}] 正文为空`);
+        if (!point.source_quote.trim() || !baselineAnswer.includes(point.source_quote)) {
+          throw new Error(`baseline points[${index}] 无法追溯到常规回答原文`);
+        }
+      }
+      for (const [index, solution] of extraction.solutions.entries()) {
+        if (!solution.text.trim()) throw new Error(`baseline solutions[${index}] 正文为空`);
+        if (!solution.source_quote.trim() || !baselineAnswer.includes(solution.source_quote)) {
+          throw new Error(`baseline solutions[${index}] 无法追溯到常规回答原文`);
+        }
+      }
+      return extraction;
+    };
+    const extraction = await this.gateway.invoke({
+      phase: 'baseline_extraction',
+      modelId: this.config.roles.baseline_extraction ?? this.config.roles.dedup ?? this.config.roles.main ?? this.config.roles.chair,
+      messages: [
+        { role: 'system', content: BASELINE_EXTRACTION_SYSTEM_PROMPT },
+        { role: 'user', content: JSON.stringify({ original_user_request: originalUserRequest, baseline_answer: baselineAnswer }) }
+      ],
+      schema: baselineExtractionSchema,
+      generation: generationFor(this.config, 'baseline_extraction'),
+      context: { original_user_request: originalUserRequest, baseline_answer: baselineAnswer },
+      logicalId: `${this.state.session_id}:T${sourceTurn}:baseline-extraction`,
+      validator: validateExtraction
+    });
+
+    const localIds = new Set();
+    for (const [index, point] of extraction.points.entries()) {
+      if (!/^B[1-9]\d*$/.test(point.local_id) || localIds.has(point.local_id)) point.local_id = `B${index + 1}`;
+      while (localIds.has(point.local_id)) point.local_id = `B${localIds.size + 1}`;
+      localIds.add(point.local_id);
+    }
+    return extraction;
+  }
+
+  initialBoardFromExtraction(extraction, baselineMessageId) {
+    const points = extraction.points.map((point, index) => {
+      const id = `P${String(index + 1).padStart(3, '0')}`;
+      const failureCondition = point.failure_condition.trim() || '常规回答未明确说明失效条件。';
+      const sourceCandidateId = `BASELINE:${point.local_id}`;
+      return {
+        id,
+        revision: 1,
+        status: 'active',
+        type: point.type,
+        text: point.text.trim(),
+        failure_condition: failureCondition,
+        source_candidate_ids: [sourceCandidateId],
+        evidence_refs: [],
+        round_introduced: 0,
+        source: 'baseline',
+        source_message_id: baselineMessageId,
+        source_quote: point.source_quote,
+        revisions: [{
+          revision: 1,
+          round: 0,
+          text: point.text.trim(),
+          failure_condition: failureCondition,
+          source_candidate_ids: [sourceCandidateId],
+          evidence_refs: []
+        }]
+      };
+    });
+    return { version: points.length ? 1 : 0, points };
+  }
+
+  async renderVarinaFinal({ originalUserRequest, baselineMessage, result, sourceTurn = this.state.current_turn }) {
+    const baselineIds = new Set(result.baseline_point_ids ?? []);
+    const points = result.meeting_board?.points ?? [];
+    const newPoints = points.filter(point => !baselineIds.has(point.id) && point.status === 'active');
+    const deliverableNewPoints = newPoints.filter(point => point.type !== 'subproblem');
+    const revisedPoints = points.filter(point => baselineIds.has(point.id) && (point.revision ?? 1) > 1 && point.status === 'active' && point.type !== 'subproblem');
+    const changedIds = new Set([...deliverableNewPoints, ...revisedPoints].map(point => point.id));
+    const solutions = (result.solutions ?? []).filter(solution =>
+      [...solution.core_mechanism_ids, ...solution.defensive_patch_ids].some(id => changedIds.has(id))
+    );
+    const rendered = await this.gateway.invoke({
+      phase: 'varina_delta',
+      modelId: this.config.roles.varina_delta ?? this.config.roles.assembly ?? this.config.roles.chair ?? this.config.roles.main,
+      messages: [
+        { role: 'system', content: VARINA_DELTA_SYSTEM_PROMPT },
+        { role: 'user', content: JSON.stringify({
+          original_user_request: originalUserRequest,
+          baseline_answer: baselineMessage.content,
+          final_active_points: points.filter(point => point.status === 'active' && point.type !== 'subproblem'),
+          new_points: deliverableNewPoints,
+          revised_points: revisedPoints,
+          rejected_directions: result.rejected_directions ?? [],
+          solutions,
+          unresolved_questions: result.unresolved_questions ?? []
+        }) }
+      ],
+      schema: varinaDeltaSchema,
+      generation: generationFor(this.config, 'varina_delta'),
+      context: { final_active_points: points, new_points: deliverableNewPoints, revised_points: revisedPoints, solutions },
+      logicalId: `${this.state.session_id}:T${sourceTurn}:varina-delta`
+    });
+    return rendered.text.trim();
+  }
+
+  async runPostReact({ originalUserRequest, baselineMessage, forced = false, sourceTurn = this.state.current_turn }) {
+    this.state.status = 'evaluating_varina';
+    await this.save();
+    const judgement = forced
+      ? { decision: 'START', reason: 'user_confirmed_after_gate' }
+      : await this.evaluateVarinaNeed(originalUserRequest, baselineMessage.content, sourceTurn);
+    const gate = await this.gate.evaluateTrigger({ varinaRequested: true, judgement });
+    if (gate.decision === 'CONFIRM') {
+      const confirmation = {
+        id: `confirm-${randomUUID().slice(0, 8)}`,
+        ...gate,
+        source_turn: sourceTurn,
+        baseline_message_id: baselineMessage.id,
+        original_problem: originalUserRequest,
+        relevant_files: [...(this.turnReadPaths ?? [])],
+        created_at: new Date().toISOString()
+      };
+      this.state.pending_confirmation = confirmation;
+      this.state.status = 'awaiting_varina_confirmation';
+      await this.save();
+      return { confirmation };
+    }
+
+    delete this.state.pending_confirmation;
+    this.state.status = 'running_varina';
+    await this.save();
+    const extraction = await this.extractBaseline(originalUserRequest, baselineMessage.content, sourceTurn);
+    const initialBoard = this.initialBoardFromExtraction(extraction, baselineMessage.id);
+    const result = await this.explore({
+      problem: extraction.task_framing || originalUserRequest,
+      user_constraints: extraction.user_constraints,
+      source_excerpts: [],
+      agent_hypotheses: extraction.agent_hypotheses,
+      relevant_files: [...(this.turnReadPaths ?? [])].filter(file => file !== 'VARINA.md')
+    }, originalUserRequest, {
+      initialBoard,
+      baselineSolutions: extraction.solutions,
+      baselineMessageId: baselineMessage.id,
+      triggerMode: forced ? 'user_confirmed_post_react' : gate.trigger_mode,
+      turnInvoked: sourceTurn
+    });
+    const content = await this.renderVarinaFinal({ originalUserRequest, baselineMessage, result, sourceTurn });
+    const addendum = {
+      id: `msg-${randomUUID().slice(0, 8)}`,
+      role: 'assistant',
+      content,
+      created_at: new Date().toISOString(),
+      partial: result.state !== 'complete',
+      steps: [],
+      turn: sourceTurn,
+      message_kind: 'varina_addendum',
+      varina_run_id: result.run_id,
+      aha_run_id: result.run_id,
+      baseline_message_id: baselineMessage.id
+    };
+    return { addendum, result };
+  }
+
+  async resolveVarinaConfirmation(confirmationId, accepted) {
+    const pending = this.state.pending_confirmation;
+    if (!pending || pending.id !== confirmationId) throw new Error('Varina 确认不存在或已处理');
+    const baselineMessage = this.state.messages.find(message => message.id === pending.baseline_message_id);
+    if (!baselineMessage) throw new Error('Varina 确认对应的常规回答不存在');
+    if (!accepted) {
+      delete this.state.pending_confirmation;
+      delete baselineMessage.confirmation;
+      baselineMessage.varina_confirmation = 'declined';
+      this.state.status = 'idle';
+      await this.save();
+      this.onEvent({ event: 'agent_done', session_id: this.state.session_id, turn: pending.source_turn, message: baselineMessage });
+      return baselineMessage;
+    }
+
+    this.turnProjectContext = await this.loadProjectContext();
+    this.turnReadPaths = new Set(pending.relevant_files ?? []);
+    delete this.state.pending_confirmation;
+    delete baselineMessage.confirmation;
+    baselineMessage.varina_confirmation = 'accepted';
+    await this.save();
+    const post = await this.runPostReact({
+      originalUserRequest: pending.original_problem,
+      baselineMessage,
+      forced: true,
+      sourceTurn: pending.source_turn
+    });
+    if (!post.addendum) throw new Error('确认后未能启动 Varina');
+    this.state.messages.push(post.addendum);
+    this.state.status = 'idle';
+    await this.save();
+    this.onEvent({ event: 'agent_done', session_id: this.state.session_id, turn: pending.source_turn, message: post.addendum });
+    return post.addendum;
   }
 
   async executeTool(call, currentUserMessage) {
@@ -493,6 +774,7 @@ export class AgentSession {
         assertString(args.file_path, 'file_path');
         result = await this.host.readFile(args.file_path, { startLine: args.start_line ?? 1, endLine: args.end_line ?? null, signal: this.signal });
         upsertManifest(this.state, result);
+        this.turnReadPaths?.add(result.filePath);
       } else if (call.name === 'Glob') {
         result = await this.host.listFiles(args.pattern ?? '**/*', { maxResults: args.max_results ?? 200, signal: this.signal });
       } else if (call.name === 'Grep') {
@@ -538,7 +820,6 @@ export class AgentSession {
       } else if (call.name === 'ListBackups') {
         result = await this.host.listBackups(args.file_path ?? null);
       } else if (call.name === 'ExploreDesign') {
-        if (this.turnEnableAha === false) throw new Error('Aha 深度探索已被用户关闭。请直接在对话中分析回答，或使用工作区工具。');
         result = await this.explore(args, currentUserMessage);
       } else throw new Error(`未知工具：${call.name}`);
       this.onEvent({
@@ -568,7 +849,13 @@ export class AgentSession {
     }
   }
 
-  async explore(args, currentUserMessage) {
+  async explore(args, currentUserMessage, {
+    initialBoard = null,
+    baselineSolutions = [],
+    baselineMessageId = null,
+    triggerMode = 'direct_internal_call',
+    turnInvoked = this.state.current_turn
+  } = {}) {
     assertString(args.problem, 'problem', { max: 10000 });
     const rawRequest = originalRequest(currentUserMessage) || args.problem.trim();
     const userConstraints = tracedUserConstraints(args.user_constraints ?? [], rawRequest);
@@ -582,23 +869,10 @@ export class AgentSession {
     const loadedPaths = new Set((this.state.loaded_files_manifest ?? []).map(item => item.file_path));
     const unreadPath = args.relevant_files.find(file => !loadedPaths.has(file));
     if (unreadPath) throw new Error(`relevant_files 只能包含本轮或此前由 Read 加载的文件：${unreadPath}`);
-    const isExplicit = (this.turnEnableVarina ?? this.turnEnableAha) === true || currentUserMessage.trim().startsWith('/varina') || currentUserMessage.trim().startsWith('/aha');
-    const gate = await this.gate.evaluateTrigger({
-      isExplicitVarina: isExplicit,
-      isExplicitAha: isExplicit,
-      sessionState: this.state,
-      signal: this.signal
-    });
-    if (gate.decision === 'CONFIRM') {
-      this.state.pending_confirmation = { id: `confirm-${randomUUID().slice(0, 8)}`, ...gate, original_problem: rawRequest };
-      return { confirmation_required: true, ...this.state.pending_confirmation };
-    }
-    if (gate.decision !== 'ALLOW') return { started: false, reason: gate.reason };
-    delete this.state.pending_confirmation;
     const runRecord = {
       run_id: `varina-${Date.now()}-${randomUUID().slice(0, 6)}`,
-      turn_invoked: this.state.current_turn,
-      trigger_mode: gate.trigger_mode,
+      turn_invoked: turnInvoked,
+      trigger_mode: triggerMode,
       problem: rawRequest,
       task_framing: args.problem.trim(),
       original_user_request: rawRequest,
@@ -608,6 +882,9 @@ export class AgentSession {
       code_context: verifiedContext,
       project_context: this.turnProjectContext?.content ?? '',
       project_context_hash: this.turnProjectContext?.content_hash ?? null,
+      baseline_message_id: baselineMessageId,
+      initial_meeting_board: initialBoard ? structuredClone(initialBoard) : null,
+      baseline_solutions: structuredClone(baselineSolutions),
       rounds_executed: 0, state: 'active'
     };
     if (!this.state.varina_runs) this.state.varina_runs = [];
@@ -616,7 +893,7 @@ export class AgentSession {
     else if (this.state.aha_runs !== this.state.varina_runs) this.state.aha_runs.push(runRecord);
     await this.save();
     const engine = new ExploreDesignEngine({
-      host: this.host, gateway: this.gateway, config: this.config, signal: this.signal,
+      host: this.host, gateway: this.gateway, decisionGateway: this.decisionGateway, config: this.config, signal: this.signal,
       onEvent: this.onEvent,
       checkpoint: async runtime => {
         this.state.active_varina_runtime = runtime;
@@ -636,7 +913,9 @@ export class AgentSession {
       relevantFiles: this.turnProjectContext?.content
         ? ['VARINA.md', ...args.relevant_files.filter(file => file !== 'VARINA.md')]
         : args.relevant_files,
-      seed: this.state.current_turn * 1009 + (this.state.varina_runs ?? this.state.aha_runs).length
+      initialBoard,
+      baselineSolutions,
+      seed: turnInvoked * 1009 + (this.state.varina_runs ?? this.state.aha_runs).length
     });
     runRecord.rounds_executed = handoff.rounds_executed;
     runRecord.state = handoff.state;
@@ -650,6 +929,9 @@ export class AgentSession {
     runRecord.round_records = handoff.round_records;
     runRecord.seat_responses = handoff.seat_responses;
     runRecord.board_history = handoff.board_history;
+    runRecord.decomposition = handoff.decomposition ?? null;
+    runRecord.subproblem_expansion = handoff.subproblem_expansion ?? null;
+    runRecord.baseline_point_ids = handoff.baseline_point_ids ?? [];
     runRecord.repository_snapshot_id = handoff.repository_snapshot_id;
     runRecord.common_prefix = handoff.common_prefix ?? null;
     runRecord.frozen_packet = handoff.frozen_packet ?? null;
@@ -674,6 +956,8 @@ export class AgentSession {
         failure_condition: point.failure_condition
       };
       if (point.evidence_refs?.length) item.evidence_refs = point.evidence_refs;
+      if (point.parent_subproblem_id) item.parent_subproblem_id = point.parent_subproblem_id;
+      if (point.source) item.source = point.source;
       return item;
     });
     const toolResult = {
@@ -691,7 +975,10 @@ export class AgentSession {
       rejected_directions: handoff.rejected_directions ?? [],
       unresolved_questions: handoff.unresolved_questions ?? [],
       degradations: handoff.degradations ?? [],
-      repository_snapshot_id: handoff.repository_snapshot_id
+      repository_snapshot_id: handoff.repository_snapshot_id,
+      baseline_point_ids: handoff.baseline_point_ids ?? [],
+      decomposition: handoff.decomposition ?? null,
+      subproblem_expansion: handoff.subproblem_expansion ?? null
     };
     return toolResult;
   }

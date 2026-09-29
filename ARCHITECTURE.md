@@ -12,10 +12,10 @@ AgentService ── SessionStore
 AgentSession (conversation + bounded tool loop)
        |                    \
        v                     v
-CodebaseHost             VarinaGateController
+CodebaseHost          Post-ReAct Varina stage
        |                     |
        v                     v
-NodeFsHost             ExploreDesignEngine
+NodeFsHost       Gate → Baseline extraction → ExploreDesignEngine
                              |
                              v
           Seats → Grounder → EvidenceVerifier → Dedup → Assembly
@@ -36,6 +36,8 @@ NodeFsHost             ExploreDesignEngine
 4. 工具续轮受 `maxToolIterations` 与 `AbortSignal` 限制。
 5. 文件正文是待分析的不可信内容，不能改变工具权限。
 6. 工具结果进对话前必须过体积闸门：单条超限或单轮合计超预算的结果落盘，对话内只保留 `persisted_path` 与预览，且配对用的 `id / name / ok` 必须原样保留。
+7. Varina 开关不得改变普通 ReAct 的 prompt、工具、context 或第一份回答；深度探索只在常规回答落盘后启动。
+8. `/init` 通过一次性 prompt overlay 和专用工具集运行；普通轮次不携带初始化协议或 `InitProject` 工具。
 
 ## Context budget
 
@@ -66,7 +68,9 @@ NodeFsHost             ExploreDesignEngine
 
 ## Varina engine
 
-`ExploreDesignEngine` 是主 Agent 的一个重型工具，不是顶层交互循环。
+`ExploreDesignEngine` 是普通 ReAct 完成后的可选增量阶段，不暴露给主 Agent 的工具循环。开关开启时，后置 gate 只在任务显然与深度探索无关时请求用户确认；不确定默认启动，确认状态持久化且没有计时超时。真实模式配置 `TYPESAFE_API_KEY` 后，这个 gate 由独立的 Jev System One 决策网关执行：只提交状态与 `START / ASK` 选项并读取概率，不进入聊天模型路由，也不生成用户可见文本；模拟模式、未配置凭据或调用失败时沿用保守的本地/既有回退。
+
+常规回答先由结构化提取器完整解析为初始 MeetingBoard，基线观点标记为 round 0，不受 creative 席位每轮 0–3 条贡献上限影响。第一轮席位从该基线继续新增、反驳或修正；终局仅向用户追加相对基线的实质增量，不覆盖常规回答。
 
 每轮先由实际纳入 Working Memory 的 `(path, content_hash)` 有序清单计算 `repository_snapshot_id`，再冻结问题、硬约束、有效事实、观点板和 snapshot，生成 `packet_token`。同轮所有席位的公共消息完全一致，席位特有算子位于公共前缀之后。
 
@@ -76,7 +80,7 @@ Runner 最多执行五轮。只有连续两轮 ADD=0、MERGE=0 且不存在阻�
 
 ## Persistence and recovery
 
-会话 JSON 是完整审计记录。Varina 每轮 checkpoint 写入 `active_varina_runtime`；正常 handoff 后沉淀为 `VarinaRunRecord` 并移除运行时容器。进程重启遇到 `running` 会话时将其标记为 `interrupted`，避免自动重复调用。
+会话 JSON 是完整审计记录。常规回答与 Varina 综合终稿分别以 `baseline`、`varina_addendum` 消息保存；后者吸收发散结果重新回答原问题，而不是只汇报增量。Varina 每轮 checkpoint 写入 `active_varina_runtime`；正常 handoff 后沉淀为 `VarinaRunRecord` 并移除运行时容器。进程重启遇到普通 ReAct 或后置 Varina 的运行态会话时将其标记为 `interrupted`，避免自动重复调用；`awaiting_varina_confirmation` 保持可恢复。
 
 模型凭证只存在于运行期配置对象。`AgentSessionStore`、会话导出和模型调用审计均不保存 provider payload 或 API Key。
 
