@@ -479,6 +479,7 @@ function viewRun(record, runtime = null) {
     unresolved: handoff.unresolved_questions ?? source.unresolved_questions ?? record?.unresolved_questions ?? [],
     rejected: handoff.rejected_directions ?? source.rejected_directions ?? record?.rejected_directions ?? [],
     degradations: handoff.degradations ?? source.degradations ?? record?.degradations ?? [],
+    decomposition: handoff.decomposition ?? source.decomposition ?? record?.decomposition ?? null,
     subproblemExpansion: handoff.subproblem_expansion ?? source.subproblem_expansion ?? record?.subproblem_expansion ?? null,
     roundRecords: handoff.round_records ?? source.round_records ?? record?.round_records ?? [],
     seatResponses: handoff.seat_responses ?? source.seat_responses ?? record?.seat_responses ?? [],
@@ -521,7 +522,15 @@ function renderBoard(run) {
 function renderSubproblemExpansion(run) {
   const expansion = run.subproblemExpansion;
   const subproblems = (run.board?.points ?? []).filter(point => point.status === 'active' && point.type === 'subproblem');
-  if (!subproblems.length) return '<div class="workbench-empty">问题拆解尚未产生可发散的子问题。</div>';
+  if (!subproblems.length) {
+    if (run.decomposition?.status === 'active') {
+      return '<div class="workbench-empty"><span class="activity-pulse"></span> 正在拆解问题，识别可独立回答的子问题…</div>';
+    }
+    if (expansion?.status === 'active') {
+      return '<div class="workbench-empty"><span class="activity-pulse"></span> 子问题拆解完成，正在准备逐题回答…</div>';
+    }
+    return '<div class="workbench-empty">问题拆解尚未产生可发散的子问题。</div>';
+  }
 
   const recordById = new Map((expansion?.records ?? []).map(record => [record.subproblem_id, record]));
   const configuredN2 = expansion?.answers_per_subproblem
@@ -850,7 +859,7 @@ function renderExplorePromptTab(run) {
 
 function renderAhaWorkspace(input, live = false, openDetails = new Set()) {
   const run = input.board ? input : viewRun(input);
-  const defaultTab = run.subproblemExpansion ? 'subproblems' : 'rounds';
+  const defaultTab = run.subproblemExpansion || run.decomposition ? 'subproblems' : 'rounds';
   const activeTab = state.ahaTabs[run.id] ?? defaultTab;
   const subproblemCount = run.board?.points?.filter(point => point.status === 'active' && point.type === 'subproblem').length ?? 0;
   const tabs = [
@@ -1127,6 +1136,19 @@ function renderToolStep(step, openDetails = new Set()) {
   `;
 }
 
+function renderVarinaProgress(progress) {
+  if (!progress) return '';
+  const isGate = progress.stage === 'gate';
+  const title = isGate ? '正在判断是否需要启动 Varina' : '正在准备 ExploreDesign';
+  const detail = isGate
+    ? '常规回答已完成，正在评估是否需要继续展开多视角推演。'
+    : '正在整理常规回答，随后进入子问题拆解与逐题回答。';
+  return `<section class="varina-progress-notice" role="status">
+    <span class="activity-pulse"></span>
+    <div><strong>${title}</strong><p>${detail}</p></div>
+  </section>`;
+}
+
 function renderMessages() {
   const target = $('#messages');
   if (!target) return;
@@ -1227,6 +1249,8 @@ function renderMessages() {
 
   if ((state.session?.active_varina_runtime || state.session?.active_aha_runtime)) {
     markup += renderAhaWorkspace(viewRun(runMap.get((state.session.active_varina_runtime || state.session.active_aha_runtime).run_id), (state.session.active_varina_runtime || state.session.active_aha_runtime)), true, openDetails);
+  } else if (state.session?.active_varina_progress) {
+    markup += renderVarinaProgress(state.session.active_varina_progress);
   }
 
   target.innerHTML = messages.length || markup ? markup : emptyState();
@@ -1366,6 +1390,8 @@ function connectEvents(sessionId) {
         renderMessages();
       }
     } else if (data.event === 'agent_baseline_done') {
+      void refreshSession(sessionId);
+    } else if (data.event === 'varina_progress') {
       void refreshSession(sessionId);
     } else if (data.event === 'agent_done') {
       delete state.session.active_turn;

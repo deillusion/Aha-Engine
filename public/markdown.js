@@ -240,10 +240,31 @@ export function renderMarkdown(markdown = '') {
     const isOrdered = /^(\s*)(\d+)\.\s+(.+)$/.test(line);
     if (isUnordered || isOrdered) {
       const listType = isOrdered ? 'ol' : 'ul';
+      const startMatch = isOrdered ? line.match(/^(\s*)(\d+)\.\s+/) : null;
+      const startAttr = isOrdered && startMatch && startMatch[2] !== '1' ? ` start="${startMatch[2]}"` : '';
       const items = [];
 
       while (i < lines.length) {
         const curr = lines[i];
+
+        // Support loose lists (items separated by blank lines)
+        if (!curr.trim()) {
+          let nextIdx = i + 1;
+          while (nextIdx < lines.length && !lines[nextIdx].trim()) {
+            nextIdx++;
+          }
+          if (nextIdx < lines.length) {
+            const nextLine = lines[nextIdx];
+            const nextUMatch = nextLine.match(/^(\s*)([-*+])\s+(.+)$/);
+            const nextOMatch = nextLine.match(/^(\s*)(\d+)\.\s+(.+)$/);
+            if ((listType === 'ul' && nextUMatch) || (listType === 'ol' && nextOMatch) || nextLine.startsWith('  ') || nextLine.startsWith('\t')) {
+              i = nextIdx;
+              continue;
+            }
+          }
+          break;
+        }
+
         const uMatch = curr.match(/^(\s*)([-*+])\s+(.+)$/);
         const oMatch = curr.match(/^(\s*)(\d+)\.\s+(.+)$/);
 
@@ -263,7 +284,7 @@ export function renderMarkdown(markdown = '') {
         }
       }
 
-      output.push(`<${listType}>${items.map(it => `<li>${it}</li>`).join('')}</${listType}>`);
+      output.push(`<${listType}${startAttr}>${items.map(it => `<li>${it}</li>`).join('')}</${listType}>`);
       continue;
     }
 

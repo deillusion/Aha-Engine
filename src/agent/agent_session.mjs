@@ -493,6 +493,7 @@ export class AgentSession {
           return post.addendum;
         }
       } catch (error) {
+        delete this.state.active_varina_progress;
         const postError = {
           id: `msg-${randomUUID().slice(0, 8)}`,
           role: 'assistant',
@@ -650,12 +651,19 @@ export class AgentSession {
 
   async runPostReact({ originalUserRequest, baselineMessage, forced = false, sourceTurn = this.state.current_turn }) {
     this.state.status = 'evaluating_varina';
+    this.state.active_varina_progress = {
+      stage: 'gate',
+      source_turn: sourceTurn,
+      problem: originalUserRequest
+    };
     await this.save();
+    this.onEvent({ event: 'varina_progress', session_id: this.state.session_id, turn: sourceTurn, stage: 'gate' });
     const judgement = forced
       ? { decision: 'START', reason: 'user_confirmed_after_gate' }
       : await this.evaluateVarinaNeed(originalUserRequest, baselineMessage.content, sourceTurn);
     const gate = await this.gate.evaluateTrigger({ varinaRequested: true, judgement });
     if (gate.decision === 'CONFIRM') {
+      delete this.state.active_varina_progress;
       const confirmation = {
         id: `confirm-${randomUUID().slice(0, 8)}`,
         ...gate,
@@ -673,7 +681,13 @@ export class AgentSession {
 
     delete this.state.pending_confirmation;
     this.state.status = 'running_varina';
+    this.state.active_varina_progress = {
+      stage: 'preparing',
+      source_turn: sourceTurn,
+      problem: originalUserRequest
+    };
     await this.save();
+    this.onEvent({ event: 'varina_progress', session_id: this.state.session_id, turn: sourceTurn, stage: 'preparing' });
     const extraction = await this.extractBaseline(originalUserRequest, baselineMessage.content, sourceTurn);
     const initialBoard = this.initialBoardFromExtraction(extraction, baselineMessage.id);
     const result = await this.explore({
@@ -896,6 +910,7 @@ export class AgentSession {
       host: this.host, gateway: this.gateway, decisionGateway: this.decisionGateway, config: this.config, signal: this.signal,
       onEvent: this.onEvent,
       checkpoint: async runtime => {
+        delete this.state.active_varina_progress;
         this.state.active_varina_runtime = runtime;
         this.state.active_aha_runtime = runtime;
         await this.save();

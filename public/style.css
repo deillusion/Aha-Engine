@@ -635,6 +635,10 @@ code { padding: 2px 6px; border-radius: 4px; background: #edf3e9; color: var(--a
 
 /* 核心高光：原汁原味 Aha 4×2 八席位卡片与推演看板 - 占满工作区，无多层嵌套外框 */
 .aha-workbench, .varina-workbench { width: 100%; max-width: 1400px; margin: 16px auto 32px; border: none; border-radius: 0; background: transparent; box-shadow: none; }
+.varina-progress-notice { display: flex; align-items: flex-start; gap: 12px; max-width: 1400px; margin: 16px auto 32px; padding: 18px 22px; border: 1px solid #d8e4d3; border-radius: 12px; background: #f7faf5; color: #284735; }
+.varina-progress-notice .activity-pulse { flex: 0 0 auto; margin-top: 5px; }
+.varina-progress-notice strong { display: block; font-size: 14px; }
+.varina-progress-notice p { margin: 5px 0 0; color: #647365; font-size: 12px; line-height: 1.5; }
 .aha-workbench, .varina-workbench.live { border: none; box-shadow: none; }
 .aha-hero, .varina-hero { display: flex; flex-direction: column; align-items: stretch; gap: 14px; padding: 18px 24px; border-radius: 12px; background: linear-gradient(135deg, #284735, #38634c); color: #ffffff; box-shadow: 0 4px 16px rgba(40, 71, 53, 0.12); }
 .aha-hero-header, .varina-hero-header { display: flex; justify-content: space-between; align-items: center; gap: 24px; width: 100%; }
