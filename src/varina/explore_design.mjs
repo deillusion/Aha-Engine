@@ -1,19 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { operators, random, sampleOperators } from '../operators.mjs';
+import { ExplorationReact } from './react.mjs';
 import { generationFor } from '../agent/model_gateway.mjs';
 import {
-  assemblySchema,
   decompositionSeatResponseSchema,
-  dedupSchema,
-  groundingSchema,
   POINT_TYPES,
   subproblemAnswerResponseSchema,
   seatResponseSchema
 } from '../agent/schemas.mjs';
 import {
-  ASSEMBLY_SYSTEM_PROMPT,
-  DEDUP_SYSTEM_PROMPT,
-  GROUNDER_SYSTEM_PROMPT,
   decompositionSeatMessages,
   subproblemAnswerMessages,
   seatMessages
@@ -38,16 +33,15 @@ function renderLoadedFiles(files) {
 }
 
 function activeFacts(facts) {
-  return facts.filter(fact => !['unknown', 'stale'].includes(fact.status)).map(fact => ({
-    fact_id: fact.fact_id,
-    fact_ref: fact.fact_ref,
-    status: fact.status,
-    semantic_summary: fact.semantic_summary,
-    correction: fact.correction ?? null
+  return facts.map(fact => ({
+    fact_id: fact.fact_id, fact_ref: fact.fact_ref, claim: fact.claim,
+    status: fact.status, semantic_summary: fact.semantic_summary,
+    correction: fact.correction ?? null, evidence: fact.evidence,
+    affected_point_ids: fact.affected_point_ids
   }));
 }
 
-function buildCommonPrefix(runtime, repositorySnapshotId, packetToken) {
+function buildCommonPrefix(runtime, repositorySnapshotId, packetToken, focus = '') {
   return JSON.stringify(canonical({
     frozen_shared_input_packet: {
       original_user_request: runtime.original_user_request,
@@ -57,7 +51,9 @@ function buildCommonPrefix(runtime, repositorySnapshotId, packetToken) {
       verified_investigation_context: runtime.code_context,
       agent_hypotheses: runtime.agent_hypotheses,
       verified_facts: activeFacts(runtime.fact_ledger),
-      current_board: runtime.current_board,
+      current_board: { ...runtime.current_board, points: runtime.current_board.points.filter(point => point.status === 'active') },
+      rejected_directions: runtime.board_changes?.filter(change => change.action === 'delete').map(change => ({ text: change.before.text, reason: change.reason })) ?? [],
+      focus,
       repository_snapshot_id: repositorySnapshotId,
       packet_token: packetToken
     },
@@ -154,22 +150,6 @@ function requestsFromResponses(round, responses) {
   })));
 }
 
-function validateGrounding(grounding, requests) {
-  const expected = new Map(requests.map(request => [request.fact_ref, request]));
-  const seen = new Set();
-  for (const fact of grounding.facts) {
-    const request = expected.get(fact.fact_ref);
-    if (!request || seen.has(fact.fact_ref)) throw new Error(`Grounder fact_ref 未知或重复：${fact.fact_ref}`);
-    seen.add(fact.fact_ref);
-    if (fact.claim !== request.claim) throw new Error(`Grounder 改写了待核验 claim：${fact.fact_ref}`);
-    if (fact.affected_candidate_ids.some(id => !request.affected_candidate_ids.includes(id))) throw new Error(`Grounder 引用了无关候选：${fact.fact_ref}`);
-    if (['contradicted', 'partially_true'].includes(fact.status) && !fact.correction?.trim()) throw new Error(`${fact.status} 必须提供 correction`);
-    if (['confirmed', 'contradicted', 'partially_true'].includes(fact.status) && (fact.evidence_strength === 'unverified' || fact.evidence.length === 0)) throw new Error(`${fact.status} 必须提供可核验证据`);
-  }
-  if (seen.size !== expected.size) throw new Error('Grounder 未逐条覆盖全部核验请求');
-  for (const request of grounding.load_requests) if (!expected.has(request.claim_ref)) throw new Error(`load_request 引用了未知 claim_ref：${request.claim_ref}`);
-}
-
 async function refreshWorkingFiles(host, loadedFiles, facts, degradations, signal) {
   const refreshed = [];
   for (const loaded of loadedFiles) {
@@ -193,50 +173,56 @@ async function refreshWorkingFiles(host, loadedFiles, facts, degradations, signa
   loadedFiles.splice(0, loadedFiles.length, ...refreshed);
 }
 
-async function verifyEvidence(host, facts, repositorySnapshotId, degradations) {
-  const verified = [];
-  for (const draft of facts) {
-    const fact = structuredClone(draft);
-    if (['confirmed', 'contradicted', 'partially_true'].includes(fact.status)) {
-      if (fact.evidence_strength === 'unverified' || fact.evidence.length === 0) {
-        fact.status = 'unknown';
-        fact.evidence_strength = 'unverified';
-        fact.evidence = [];
-        degradations.push(`证据不足，${fact.fact_ref} 已降级为 unknown`);
-      } else {
-        let stale = false;
-        let invalid = false;
-        for (const evidence of fact.evidence) {
-          try {
-            if (!Array.isArray(evidence.lineRange) || evidence.lineRange.length !== 2 || evidence.lineRange[0] < 1 || evidence.lineRange[1] < evidence.lineRange[0]) throw new Error('行范围无效');
-            const current = await host.readFile(evidence.filePath, { startLine: evidence.lineRange[0], endLine: evidence.lineRange[1] });
-            if (current.contentHash !== evidence.content_hash) { stale = true; break; }
-            const normalizedSnippet = evidence.snippet.replace(/\r\n?/g, '\n').trim();
-            if (!normalizedSnippet || !current.content.includes(normalizedSnippet)) throw new Error('snippet 与行范围不匹配');
-          } catch (error) {
-            if (error.code === 'ENOENT') stale = true;
-            else invalid = true;
-            break;
-          }
-        }
-        if (stale || invalid) {
-          fact.status = stale ? 'stale' : 'unknown';
-          fact.evidence_strength = 'unverified';
-          degradations.push(`${fact.fact_ref} 的证据${stale ? '已陈旧' : '未通过路径/行号/snippet 验真'}`);
-        }
-      }
-    }
-    verified.push({ ...fact, source_snapshot_id: repositorySnapshotId });
-  }
-  return verified;
-}
-
 function fallbackOperations(candidates) {
   return candidates.map(candidate => ({
     action: 'ADD', candidate_ids: [candidate.candidate_id], target_point_id: null,
     text: candidate.text, failure_condition: candidate.failure_condition, type: candidate.type,
     reason: null, duplicate_of: null, evidence_refs: []
   }));
+}
+
+// Merge levels run in parallel; each level waits for the preceding level.
+// The final board comparison uses the same frozen board for every survivor.
+export async function deduplicateIdeas({ decisionGateway, parentProblem, candidates, board, logicalId, signal }) {
+  const decisions = [];
+  const errors = [];
+  const dropped = new Set();
+  const compare = async (candidate, referenceItems, stage) => {
+    signal?.throwIfAborted();
+    try {
+      if (!decisionGateway?.evaluateIdeaRedundancy) throw new Error('发散观点去重未连接 Jev');
+      const result = await decisionGateway.evaluateIdeaRedundancy({
+        parentProblem, referenceItems, candidate,
+        logicalId: `${logicalId}:${stage}:${candidate.candidate_id}`
+      });
+      if (typeof result.duplicate !== 'boolean') throw new Error('Jev 观点判重缺少布尔结果');
+      decisions.push({ stage, candidate_id: candidate.candidate_id, reference_ids: referenceItems.map(item => item.id ?? item.candidate_id), ...result });
+      if (result.duplicate) dropped.add(candidate.candidate_id);
+      return !result.duplicate;
+    } catch (error) {
+      signal?.throwIfAborted();
+      errors.push({ stage, candidate_id: candidate.candidate_id, error: String(error.message).slice(0, 220) });
+      return true; // Only this failed comparison is kept, not the entire round.
+    }
+  };
+  let groups = candidates.map(candidate => [candidate]);
+  let level = 0;
+  while (groups.length > 1) {
+    level++;
+    const pairs = [];
+    for (let index = 0; index < groups.length; index += 2) pairs.push([groups[index], groups[index + 1]]);
+    groups = await Promise.all(pairs.map(async ([left, right]) => {
+      if (!right) return left;
+      const keep = await Promise.all(right.map(candidate => compare(candidate, left, `increment-L${level}`)));
+      return [...left, ...right.filter((_, index) => keep[index])];
+    }));
+  }
+  const survivors = groups[0] ?? [];
+  await Promise.all(survivors.map(candidate => compare(candidate, board.points, 'board')));
+  const operations = fallbackOperations(candidates).map(operation => dropped.has(operation.candidate_ids[0])
+    ? { ...operation, action: 'DROP', text: null, failure_condition: null, type: null, reason: 'Jev 判定已有观点实质覆盖', duplicate_of: null }
+    : operation);
+  return { operations, decisions, errors, increment_survivor_ids: survivors.map(candidate => candidate.candidate_id) };
 }
 
 function validateOperations(operations, candidates, board, factRefs) {
@@ -336,23 +322,6 @@ async function loadInitialFiles(host, relevantFiles, degradations) {
     catch (error) { degradations.push(`无法加载 ${filePath}：${String(error.message).slice(0, 180)}`); }
   }
   return loaded;
-}
-
-async function fulfillLoadRequests(host, requests, loaded, degradations, signal) {
-  const known = new Set(loaded.map(file => file.filePath));
-  const paths = [];
-  for (const request of requests.filter(item => item.blocking)) {
-    paths.push(...request.candidate_paths);
-    for (const hint of request.search_hints.slice(0, 2)) {
-      try { paths.push(...(await host.grep(hint, { maxResults: 8, signal })).map(match => match.file)); }
-      catch (error) { degradations.push(`load_request 检索失败：${String(error.message).slice(0, 180)}`); }
-    }
-  }
-  for (const filePath of [...new Set(paths)].slice(0, 12)) {
-    if (known.has(filePath)) continue;
-    try { const file = await host.readFile(filePath, { signal }); loaded.push(file); known.add(file.filePath); }
-    catch (error) { degradations.push(`load_request 无法读取 ${filePath}：${String(error.message).slice(0, 180)}`); }
-  }
 }
 
 function normalizedQuestionText(value) {
@@ -1013,6 +982,123 @@ export class ExploreDesignEngine {
     });
   }
 
+  async divergeRound({ runtime, runId, loadedFiles, rng, seats, focus = '' }) {
+    const round = runtime.round_records.length + 1;
+    if (round > runtime.max_rounds) throw new Error('发散轮次已达到上限');
+    runtime.current_round = round;
+    await refreshWorkingFiles(this.host, loadedFiles, runtime.fact_ledger, runtime.degradations, this.signal);
+    runtime.repository_snapshot_id = snapshotId(loadedFiles);
+    const before = structuredClone(runtime.current_board);
+    this.onEvent({ phase: 'varina_round_start', round, message: `第 ${round} 轮推演开始` });
+    const packetMaterial = canonical({
+      run_id: runId,
+      round,
+      board_version: runtime.current_board.version,
+      repository_snapshot_id: runtime.repository_snapshot_id,
+      original_user_request: runtime.original_user_request,
+      task_framing: runtime.task_framing,
+      project_context: runtime.project_context,
+      user_constraints: runtime.hard_constraints,
+      verified_context: runtime.code_context,
+      agent_hypotheses: runtime.agent_hypotheses,
+      facts: activeFacts(runtime.fact_ledger),
+      board: runtime.current_board
+    });
+    const packetToken = digest(packetMaterial);
+    runtime.current_packet_token = packetToken;
+    const commonPrefix = buildCommonPrefix(runtime, runtime.repository_snapshot_id, packetToken, focus);
+    runtime.common_prefix = commonPrefix;
+    try { runtime.frozen_packet = JSON.parse(commonPrefix); } catch { runtime.frozen_packet = null; }
+    const assignments = seats.map(seat => ({ seat, operators: sampleOperators(rng, operators) }));
+    runtime.current_assignments = assignments.map(a => ({
+      seat_id: a.seat.id,
+      modelId: a.seat.modelId,
+      operators: a.operators.map(op => ({
+        id: op.operator_id,
+        name: op.name,
+        prompt: op.prompt
+      }))
+    }));
+    runtime.partial_seat_responses = [];
+    await this.checkpoint(runtime);
+    this.onEvent({ phase: 'varina_seats', round, message: `${seats.length} 个席位正在从同一冻结包发散` });
+    const settled = await Promise.allSettled(assignments.map(({ seat, operators: cards }) => this.gateway.invoke({
+      phase: 'varina_seat', modelId: seat.modelId,
+      messages: seatMessages({ commonPrefix, seatId: seat.id, operators: cards }),
+      schema: seatResponseSchema, generation: generationFor(this.config, 'varina_seat'),
+      context: { round, seat_id: seat.id, packet_token: packetToken },
+      logicalId: `${runId}:R${round}:${seat.id}`,
+      validator: response => {
+        normalizeSeatResponse(response);
+        checkSeat(response, { seatId: seat.id, packetToken });
+        return response;
+      }
+    }).then(async response => {
+      normalizeSeatResponse(response);
+      checkSeat(response, { seatId: seat.id, packetToken });
+      if (!runtime.partial_seat_responses) runtime.partial_seat_responses = [];
+      runtime.partial_seat_responses.push(response);
+      await this.checkpoint(runtime).catch(() => {});
+      this.onEvent({ phase: 'varina_seat_done', round, seat_id: seat.id, message: `席位 ${seat.id} 完成思考` });
+      return response;
+    })));
+    const responses = settled.filter(item => item.status === 'fulfilled').map(item => item.value);
+    settled.forEach((item, index) => {
+      if (item.status === 'rejected') runtime.degradations.push(`R${round} ${seats[index].id} 失败：${String(item.reason?.message ?? item.reason).slice(0, 180)}`);
+    });
+    if (responses.length < Math.ceil(seats.length / 2)) throw new Error(`R${round} 成功席位不足：${responses.length}/${seats.length}`);
+    runtime.seat_responses.push({ round, packet_token: packetToken, responses: structuredClone(responses) });
+    delete runtime.partial_seat_responses;
+    delete runtime.current_assignments;
+    await this.checkpoint(runtime);
+    const candidates = candidatesFromResponses(round, responses);
+    const verificationRequests = requestsFromResponses(round, responses);
+
+    this.onEvent({ phase: 'varina_dedup', round, message: `归一化 ${candidates.length} 条原子候选` });
+    const dedup = await deduplicateIdeas({
+      decisionGateway: this.decisionGateway, parentProblem: runtime.original_user_request,
+      candidates, board: structuredClone(runtime.current_board), logicalId: `${runId}:R${round}:dedup`, signal: this.signal
+    });
+    const operations = dedup.operations;
+    const degradation = dedup.errors.length ? `R${round} Jev 判重 ${dedup.errors.length} 项失败；仅保留对应候选` : undefined;
+    if (degradation) runtime.degradations.push(degradation);
+    runtime.idea_dedup_records ??= [];
+    runtime.idea_dedup_records.push({ round, candidates: structuredClone(candidates), ...dedup });
+    validateOperations(operations, candidates, runtime.current_board, new Set(runtime.fact_ledger.flatMap(fact => [fact.fact_id, fact.fact_ref])));
+    const applied = applyOperations(runtime, round, operations, candidates);
+
+    const linkedRequests = verificationRequests.map(request => ({
+      ...request,
+      affected_point_ids: [...new Set(request.affected_candidate_ids.map(id => applied.candidateToPoint.get(id)).filter(Boolean))],
+      status: 'pending'
+    })).filter(request => request.affected_point_ids.length);
+    runtime.verification_requests.push(...linkedRequests);
+    runtime.applied_idempotency_keys.push(digest({ runId, round, packetToken }));
+    runtime.round_records.push({
+      round_index: round,
+      allocated_operators: Object.fromEntries(assignments.map(item => [item.seat.id, item.operators.map(operator => operator.operator_id)])),
+      new_points_added: applied.add, points_merged: applied.merge, points_dropped: applied.drop,
+      claims_verified: 0, unresolved_blocking_claims: linkedRequests.length,
+      packet_token: packetToken, degradation
+    });
+    const oldPoints = new Map(before.points.map(point => [point.id, point]));
+    const added = runtime.current_board.points.filter(point => !oldPoints.has(point.id));
+    const modified = runtime.current_board.points.filter(point => oldPoints.has(point.id) && JSON.stringify(point) !== JSON.stringify(oldPoints.get(point.id)));
+    for (const point of [...added, ...modified]) point.verification_status = 'unknown';
+    // History and the tool result contain the same post-commit board values.
+    runtime.board_history[runtime.board_history.length - 1] = structuredClone(runtime.current_board);
+    await this.checkpoint(runtime);
+    this.onEvent({ phase: 'varina_round_complete', round, message: `新增 ${applied.add}，合并 ${applied.merge}，丢弃 ${applied.drop}` });
+    return {
+      round, board_version: runtime.current_board.version,
+      added_items: structuredClone(added), modified_items: structuredClone(modified),
+      dropped_candidates: operations.filter(operation => operation.action === 'DROP'),
+      verification_requests: linkedRequests, remaining_rounds: runtime.max_rounds - round,
+      fact_updates: runtime.fact_ledger.filter(fact => fact.status === 'stale'),
+      degradation: degradation ?? null
+    };
+  }
+
   async run({
     sessionId,
     problem,
@@ -1048,8 +1134,8 @@ export class ExploreDesignEngine {
       hard_constraints: constraints,
       agent_hypotheses: agentHypotheses,
       code_context: codeContext,
-      status: 'active', repository_snapshot_id: '', current_round: 1, max_rounds: 5,
-      consecutive_no_change_rounds: 0, board_history: [structuredClone(seededBoard)],
+      status: 'active', repository_snapshot_id: '', current_round: 0, max_rounds: this.config.exploration?.rounds ?? 5,
+      verification_requests: [], board_changes: [], board_history: [structuredClone(seededBoard)],
       current_board: seededBoard, baseline_point_ids: [...seededIds], baseline_solutions: structuredClone(baselineSolutions),
       fact_ledger: [], working_memory_files: [],
       round_records: [], seat_responses: [], current_packet_token: '', applied_idempotency_keys: [],
@@ -1082,196 +1168,42 @@ export class ExploreDesignEngine {
       if (!seats.length) throw new Error('Varina 至少需要一个创意席位');
       await this.runDecomposition({ runtime, runId, loadedFiles });
       await this.runSubproblemExpansion({ runtime, runId });
-      for (let round = 1; round <= runtime.max_rounds; round++) {
-        this.signal?.throwIfAborted();
-        runtime.current_round = round;
-        await this.checkpoint(runtime);
-        this.onEvent({ phase: 'varina_round_start', round, message: `第 ${round} 轮推演开始` });
-        await refreshWorkingFiles(this.host, loadedFiles, runtime.fact_ledger, runtime.degradations, this.signal);
-        runtime.repository_snapshot_id = snapshotId(loadedFiles);
-        runtime.working_memory_files = loadedFiles.map(file => ({ file_path: file.filePath, loaded_at_round: round, token_count: Math.ceil(file.content.length / 4), content_hash: file.contentHash, snapshot_id: runtime.repository_snapshot_id }));
-        const packetMaterial = canonical({
-          run_id: runId,
-          round,
-          board_version: runtime.current_board.version,
-          repository_snapshot_id: runtime.repository_snapshot_id,
-          original_user_request: originalRequest,
-          task_framing: taskFraming,
-          project_context: projectContext,
-          user_constraints: constraints,
-          verified_context: codeContext,
-          agent_hypotheses: agentHypotheses,
-          facts: activeFacts(runtime.fact_ledger),
-          board: runtime.current_board
-        });
-        const packetToken = digest(packetMaterial);
-        runtime.current_packet_token = packetToken;
-        const commonPrefix = buildCommonPrefix(runtime, runtime.repository_snapshot_id, packetToken);
-        runtime.common_prefix = commonPrefix;
-        try { runtime.frozen_packet = JSON.parse(commonPrefix); } catch { runtime.frozen_packet = null; }
-        const assignments = seats.map(seat => ({ seat, operators: sampleOperators(rng, operators) }));
-        runtime.current_assignments = assignments.map(a => ({
-          seat_id: a.seat.id,
-          modelId: a.seat.modelId,
-          operators: a.operators.map(op => ({
-            id: op.operator_id,
-            name: op.name,
-            prompt: op.prompt
-          }))
-        }));
-        runtime.partial_seat_responses = [];
-        await this.checkpoint(runtime);
-        this.onEvent({ phase: 'varina_seats', round, message: `${seats.length} 个席位正在从同一冻结包发散` });
-        const settled = await Promise.allSettled(assignments.map(({ seat, operators: cards }) => this.gateway.invoke({
-          phase: 'varina_seat', modelId: seat.modelId,
-          messages: seatMessages({ commonPrefix, seatId: seat.id, operators: cards }),
-          schema: seatResponseSchema, generation: generationFor(this.config, 'varina_seat'),
-          context: { round, seat_id: seat.id, packet_token: packetToken },
-          logicalId: `${runId}:R${round}:${seat.id}`,
-          validator: response => {
-            normalizeSeatResponse(response);
-            checkSeat(response, { seatId: seat.id, packetToken });
-            return response;
-          }
-        }).then(async response => {
-          normalizeSeatResponse(response);
-          checkSeat(response, { seatId: seat.id, packetToken });
-          if (!runtime.partial_seat_responses) runtime.partial_seat_responses = [];
-          runtime.partial_seat_responses.push(response);
-          await this.checkpoint(runtime).catch(() => {});
-          this.onEvent({ phase: 'varina_seat_done', round, seat_id: seat.id, message: `席位 ${seat.id} 完成思考` });
-          return response;
-        })));
-        const responses = settled.filter(item => item.status === 'fulfilled').map(item => item.value);
-        settled.forEach((item, index) => {
-          if (item.status === 'rejected') runtime.degradations.push(`R${round} ${seats[index].id} 失败：${String(item.reason?.message ?? item.reason).slice(0, 180)}`);
-        });
-        if (responses.length < Math.ceil(seats.length / 2)) throw new Error(`R${round} 成功席位不足：${responses.length}/${seats.length}`);
-        runtime.seat_responses.push({ round, packet_token: packetToken, responses: structuredClone(responses) });
-        delete runtime.partial_seat_responses;
-        delete runtime.current_assignments;
-        await this.checkpoint(runtime);
-        const candidates = candidatesFromResponses(round, responses);
-        const verificationRequests = requestsFromResponses(round, responses);
-
-        let grounding = { facts: [], load_requests: [] };
-        if (verificationRequests.length) {
-          const invokeGrounder = () => this.gateway.invoke({
-            phase: 'varina_grounder', modelId: this.config.roles.grounder ?? this.config.roles.dedup,
-            messages: [
-              { role: 'system', content: GROUNDER_SYSTEM_PROMPT },
-              { role: 'user', content: `Loaded context:\n${renderLoadedFiles(loadedFiles)}\n\nClaims:\n${JSON.stringify(verificationRequests)}` }
-            ],
-            schema: groundingSchema, generation: generationFor(this.config, 'varina_grounder'),
-            context: { round, requests: verificationRequests }, logicalId: `${runId}:R${round}:grounder`,
-            validator: grounding => validateGrounding(grounding, verificationRequests)
-          });
-          this.onEvent({ phase: 'varina_grounding', round, message: `核验 ${verificationRequests.length} 条实现假设` });
-          grounding = await invokeGrounder();
-          validateGrounding(grounding, verificationRequests);
-          if (grounding.load_requests.some(request => request.blocking)) {
-            const before = loadedFiles.length;
-            await fulfillLoadRequests(this.host, grounding.load_requests, loadedFiles, runtime.degradations, this.signal);
-            if (loadedFiles.length > before) {
-              runtime.repository_snapshot_id = snapshotId(loadedFiles);
-              grounding = await invokeGrounder();
-              validateGrounding(grounding, verificationRequests);
-            }
-          }
-          grounding.facts = await verifyEvidence(this.host, grounding.facts, runtime.repository_snapshot_id, runtime.degradations);
+      const react = new ExplorationReact({
+        runtime, host: this.host, gateway: this.gateway, config: this.config,
+        signal: this.signal, checkpoint: this.checkpoint, onEvent: this.onEvent,
+        validateAssembly,
+        diverge: args => this.divergeRound({ runtime, runId, loadedFiles, rng, seats, focus: args.focus ?? '' }),
+        refreshSources: async filePath => {
+          if (!loadedFiles.some(file => file.filePath === filePath)) loadedFiles.push(await this.host.readFile(filePath, { signal: this.signal }));
+          await refreshWorkingFiles(this.host, loadedFiles, runtime.fact_ledger, runtime.degradations, this.signal);
+          runtime.repository_snapshot_id = snapshotId(loadedFiles);
+          runtime.working_memory_files = loadedFiles.map(file => ({ file_path: file.filePath, content_hash: file.contentHash, snapshot_id: runtime.repository_snapshot_id }));
         }
-        const factStart = runtime.fact_ledger.length + 1;
-        const roundFacts = grounding.facts.map((fact, index) => ({
-          ...fact, fact_id: `F${String(factStart + index).padStart(3, '0')}`,
-          round_introduced: round, affected_point_ids: []
-        }));
-
-        this.onEvent({ phase: 'varina_dedup', round, message: `归一化 ${candidates.length} 条原子候选` });
-        let operations;
-        let degradation;
-        if (!candidates.length) operations = [];
-        else {
-          try {
-            const result = await this.gateway.invoke({
-              phase: 'varina_dedup', modelId: this.config.roles.dedup,
-              messages: [
-                { role: 'system', content: DEDUP_SYSTEM_PROMPT },
-                { role: 'user', content: JSON.stringify({
-                  original_user_request: runtime.original_user_request,
-                  project_context: runtime.project_context,
-                  user_constraints: runtime.hard_constraints,
-                  agent_hypotheses: runtime.agent_hypotheses,
-                  board: runtime.current_board,
-                  facts: roundFacts,
-                  candidates
-                }) }
-              ], schema: dedupSchema, generation: generationFor(this.config, 'varina_dedup'),
-              context: { round, board: runtime.current_board, facts: roundFacts, candidates }, logicalId: `${runId}:R${round}:dedup`
-            });
-            validateOperations(result.operations, candidates, runtime.current_board, new Set(roundFacts.flatMap(fact => [fact.fact_id, fact.fact_ref])));
-            operations = result.operations;
-          } catch (error) {
-            degradation = `R${round} dedup 降级：${String(error.message).slice(0, 220)}`;
-            runtime.degradations.push(degradation);
-            operations = fallbackOperations(candidates);
-          }
-        }
-        const applied = applyOperations(runtime, round, operations, candidates);
-        for (const fact of roundFacts) {
-          fact.affected_point_ids = [...new Set((fact.affected_candidate_ids ?? []).map(id => applied.candidateToPoint.get(id)).filter(Boolean))];
-          delete fact.affected_candidate_ids;
-        }
-        runtime.fact_ledger.push(...roundFacts);
-        const unresolvedBlocking = grounding.load_requests.filter(request => request.blocking).length + roundFacts.filter(fact => fact.status === 'unknown').length;
-        runtime.consecutive_no_change_rounds = applied.add === 0 && applied.merge === 0 && unresolvedBlocking === 0 ? runtime.consecutive_no_change_rounds + 1 : 0;
-        const idempotencyKey = digest({ runId, round, packetToken });
-        runtime.applied_idempotency_keys.push(idempotencyKey);
-        runtime.round_records.push({
-          round_index: round,
-          allocated_operators: Object.fromEntries(assignments.map(item => [item.seat.id, item.operators.map(operator => operator.operator_id)])),
-          new_points_added: applied.add, points_merged: applied.merge, points_dropped: applied.drop,
-          claims_verified: roundFacts.filter(fact => !['unknown', 'stale'].includes(fact.status)).length,
-          unresolved_blocking_claims: unresolvedBlocking, packet_token: packetToken, degradation
-        });
-        await this.checkpoint(runtime);
-        this.onEvent({ phase: 'varina_round_complete', round, message: `新增 ${applied.add}，合并 ${applied.merge}，丢弃 ${applied.drop}` });
-        if (runtime.consecutive_no_change_rounds >= 2) { stopReason = 'early_convergence'; break; }
-      }
-
-      this.onEvent({ phase: 'varina_assembly', round: runtime.current_round, message: '从观点板生成正交机制装配索引' });
-      try {
-        const assembly = await this.gateway.invoke({
-          phase: 'varina_assembly', modelId: this.config.roles.assembly ?? this.config.roles.chair,
-          messages: [
-            { role: 'system', content: ASSEMBLY_SYSTEM_PROMPT },
-            { role: 'user', content: JSON.stringify({
-              original_user_request: runtime.original_user_request,
-              project_context: runtime.project_context,
-              user_constraints: runtime.hard_constraints,
-              agent_hypotheses: runtime.agent_hypotheses,
-              board: runtime.current_board,
-              fact_ledger: runtime.fact_ledger,
-              rejected_directions: runtime.rejected_directions,
-              baseline_solutions: runtime.baseline_solutions
-            }) }
-          ], schema: assemblySchema, generation: generationFor(this.config, 'varina_assembly'),
-          context: { board: runtime.current_board, fact_ledger: runtime.fact_ledger }, logicalId: `${runId}:assembly`,
-          validator: res => validateAssembly(res, runtime.current_board)
-        });
-        validateAssembly(assembly, runtime.current_board);
-        solutions = assembly.solutions;
-        unresolvedQuestions = assembly.unresolved_questions;
-      } catch (error) {
-        runtime.degradations.push(`机制装配失败：${String(error.message).slice(0, 220)}`);
-      }
+      });
+      const final = await react.run();
+      solutions = final.solutions;
+      unresolvedQuestions = final.unresolved_questions;
+      runtime.final_text = final.final_text;
+      stopReason = 'required_rounds_complete';
       runtime.status = 'complete';
     } catch (error) {
       runtime.status = this.signal?.aborted ? 'cancelled' : 'failed';
-      stopReason = this.signal?.aborted ? 'user_cancelled' : 'provider_failure';
+      stopReason = this.signal?.aborted ? 'user_cancelled' : error.code ?? 'provider_failure';
+      if (runtime.react) runtime.react.status = runtime.status;
       runtime.degradations.push(String(error.message).slice(0, 500));
     }
+    const unresolvedClaims = runtime.verification_requests.filter(request => ['pending', 'unknown', 'stale'].includes(request.status));
+    unresolvedQuestions = [...new Set([...unresolvedQuestions, ...unresolvedClaims.map(request => request.claim),
+      ...runtime.fact_ledger.filter(fact => ['unknown', 'stale'].includes(fact.status)).map(fact => fact.claim)])];
+    if (runtime.final_text && unresolvedQuestions.length) runtime.final_text += `\n\n尚未解决的依赖：\n${unresolvedQuestions.map(question => `- ${question}`).join('\n')}`;
     const handoff = {
       run_id: runId, terminal: true, state: runtime.status,
+      final_text: runtime.final_text ?? null,
+      react: runtime.react ?? null,
+      board_changes: runtime.board_changes,
+      verification_requests: runtime.verification_requests,
+      idea_dedup_records: runtime.idea_dedup_records ?? [],
+      max_rounds: runtime.max_rounds,
       stop_reason: stopReason, rounds_executed: runtime.round_records.length,
       meeting_board: runtime.current_board, fact_ledger: runtime.fact_ledger,
       rejected_directions: runtime.rejected_directions, solutions,

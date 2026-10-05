@@ -159,6 +159,11 @@
     "answersPerSubproblem": 2,
     "maxElementsPerAnswer": 3
   },
+  "exploration": {
+    "rounds": 5,
+    "maxReactSteps": 100,
+    "maxContextChars": 1000000
+  },
   "retries": 2,
   "timeoutMs": 180000,
   "minimumCreativeRatio": 0.5,

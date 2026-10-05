@@ -26,6 +26,10 @@ export const MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 200_000;
 /** 落盘后回给模型的预览长度，对标 Claude Code 的 PREVIEW_SIZE_BYTES = 2000。 */
 export const PREVIEW_CHARS = 2_000;
 
+// These results are the ReAct agent's only authoritative stream of board and
+// fact changes. Never replace them with a disk path or a truncated preview.
+export const PROTECTED_RESULT_TOOLS = new Set(['Diverge', 'UpdateBoardItem', 'Finish']);
+
 export function resultMaxChars(name) {
   return MAX_RESULT_CHARS_BY_TOOL[name] ?? DEFAULT_MAX_RESULT_CHARS;
 }
@@ -64,12 +68,12 @@ export async function applyToolResultBudget(results, { persist, budget = MAX_TOO
   const sizes = results.map(measure);
   const overLimit = new Set();
   results.forEach((item, index) => {
-    if (sizes[index] > resultMaxChars(item.name)) overLimit.add(index);
+    if (!PROTECTED_RESULT_TOOLS.has(item.name) && sizes[index] > resultMaxChars(item.name)) overLimit.add(index);
   });
   let total = sizes.reduce((sum, size, index) => (overLimit.has(index) ? sum : sum + size), 0);
   if (total > budget) {
     const order = results.map((_, index) => index)
-      .filter(index => !overLimit.has(index))
+      .filter(index => !overLimit.has(index) && !PROTECTED_RESULT_TOOLS.has(results[index].name))
       .sort((a, b) => sizes[b] - sizes[a]);
     for (const index of order) {
       if (total <= budget) break;
@@ -97,7 +101,8 @@ export async function applyToolResultBudget(results, { persist, budget = MAX_TOO
       persisted_path: stored.filePath,
       persisted_chars: text.length,
       note,
-      preview: previewOf(text)
+      preview: previewOf(text),
+      ...(item.result?.fact_updates?.length ? { fact_updates: item.result.fact_updates } : {})
     });
   }
   return { results: kept, persisted, chars: measure(kept) };

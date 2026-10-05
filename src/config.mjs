@@ -65,7 +65,7 @@ export function resolveActiveConfig(config, mode = 'live') {
 
   // 1. Role Fallback:
   const preferredFallbackRoleModel = activeIds.has(config.roles?.chair) ? config.roles.chair : activeModels[0].id;
-  for (const roleKey of ['chair', 'dedup', 'dealer', 'main', 'grounder', 'assembly']) {
+  for (const roleKey of ['chair', 'dedup', 'dealer', 'main', 'grounder', 'assembly', 'exploration']) {
     const currentModelId = resolved.roles?.[roleKey];
     if (currentModelId && !activeIds.has(currentModelId)) {
       resolved.roles[roleKey] = preferredFallbackRoleModel;
@@ -208,18 +208,24 @@ export async function loadConfig(root, mode = 'mock', { allowKeyless = false } =
     ...DEFAULT_SUBPROBLEM_EXPANSION_CONFIG,
     ...(config.subproblemExpansion ?? {})
   };
+  config.exploration = { rounds: 5, maxReactSteps: 100, maxContextChars: 1000000, ...(config.exploration ?? {}) };
   validateConfig(config, mode, { allowKeyless });
   return config;
 }
 
 export function validateConfig(c, mode, { allowKeyless = false } = {}) {
+  if (c.exploration) {
+    assert(Number.isInteger(c.exploration.rounds) && c.exploration.rounds >= 1 && c.exploration.rounds <= 5, 'exploration.rounds must be between 1 and 5');
+    assert(Number.isInteger(c.exploration.maxReactSteps) && c.exploration.maxReactSteps >= 1 && c.exploration.maxReactSteps <= 1000, 'exploration.maxReactSteps must be between 1 and 1000');
+    assert(Number.isInteger(c.exploration.maxContextChars) && c.exploration.maxContextChars >= 1000, 'exploration.maxContextChars must be at least 1000');
+  }
   assert(Array.isArray(c.models) && c.models.length > 0 && Array.isArray(c.seats) && c.seats.length > 0 && c.seats.length <= 32, '模型和席位不能为空，席位上限32');
   const ids = c.models.map(m => m.id);
   assert(new Set(ids).size === ids.length && new Set(c.seats.map(s => s.id)).size === c.seats.length, '模型或席位 ID 重复');
   for (const s of c.seats) assert(/^[A-Za-z0-9_-]+$/.test(s.id) && ids.includes(s.modelId), '席位模型引用错误');
   for (const role of ['dedup', 'chair']) assert(ids.includes(c.roles?.[role]), `缺少 ${role} 模型`);
   if (c.roles?.dealer) assert(ids.includes(c.roles.dealer), '缺少 dealer 模型');
-  for (const role of ['main', 'grounder', 'assembly']) if (c.roles?.[role]) assert(ids.includes(c.roles[role]), `缺少 ${role} 模型`);
+  for (const role of ['main', 'grounder', 'assembly', 'exploration']) if (c.roles?.[role]) assert(ids.includes(c.roles[role]), `缺少 ${role} 模型`);
   for (const phase of ['creative', 'dedup', 'decision', 'chair']) {
     const g = c.generation?.[phase];
     assert(g && Number.isInteger(g.max_output_tokens) && g.max_output_tokens > 0, `${phase} token 上限错误`);

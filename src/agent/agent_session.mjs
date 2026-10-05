@@ -415,6 +415,7 @@ export class AgentSession {
           messages.push({
             role: 'assistant',
             content: output.message || null,
+            ...(output.raw_native_parts ? { native_parts: output.raw_native_parts } : {}),
             tool_calls: output.raw_tool_calls
           });
           for (const item of budgeted.results) {
@@ -703,7 +704,9 @@ export class AgentSession {
       triggerMode: forced ? 'user_confirmed_post_react' : gate.trigger_mode,
       turnInvoked: sourceTurn
     });
-    const content = await this.renderVarinaFinal({ originalUserRequest, baselineMessage, result, sourceTurn });
+    const content = result.final_text || (result.state !== 'complete'
+      ? `Varina 探索未完成：${result.degradations?.at(-1) ?? result.stop_reason}。已保留观点板和事实账本，可查看已产生的结果。`
+      : await this.renderVarinaFinal({ originalUserRequest, baselineMessage, result, sourceTurn }));
     const addendum = {
       id: `msg-${randomUUID().slice(0, 8)}`,
       role: 'assistant',
@@ -933,6 +936,7 @@ export class AgentSession {
       seed: turnInvoked * 1009 + (this.state.varina_runs ?? this.state.aha_runs).length
     });
     runRecord.rounds_executed = handoff.rounds_executed;
+    runRecord.max_rounds = handoff.max_rounds;
     runRecord.state = handoff.state;
     runRecord.stop_reason = handoff.stop_reason;
     runRecord.final_meeting_board = handoff.meeting_board;
@@ -942,10 +946,15 @@ export class AgentSession {
     runRecord.degradations = handoff.degradations;
     runRecord.unresolved_questions = handoff.unresolved_questions;
     runRecord.round_records = handoff.round_records;
+    runRecord.idea_dedup_records = handoff.idea_dedup_records ?? [];
     runRecord.seat_responses = handoff.seat_responses;
     runRecord.board_history = handoff.board_history;
     runRecord.decomposition = handoff.decomposition ?? null;
     runRecord.subproblem_expansion = handoff.subproblem_expansion ?? null;
+    runRecord.react = handoff.react ?? null;
+    runRecord.board_changes = handoff.board_changes ?? [];
+    runRecord.verification_requests = handoff.verification_requests ?? [];
+    runRecord.final_text = handoff.final_text ?? null;
     runRecord.baseline_point_ids = handoff.baseline_point_ids ?? [];
     runRecord.repository_snapshot_id = handoff.repository_snapshot_id;
     runRecord.common_prefix = handoff.common_prefix ?? null;
@@ -976,11 +985,13 @@ export class AgentSession {
       return item;
     });
     const toolResult = {
+      final_text: handoff.final_text ?? null,
       run_id: handoff.run_id,
       terminal: handoff.terminal,
       state: handoff.state,
       stop_reason: handoff.stop_reason,
       rounds_executed: handoff.rounds_executed,
+      max_rounds: handoff.max_rounds,
       meeting_board: {
         version: handoff.meeting_board?.version,
         points: cleanPoints

@@ -59,7 +59,7 @@ export async function postJSON(url, payload, headers, { signal, proxy: specified
         response.on('error', reject);
         response.on('end', () => {
           let error = null;
-          if (size <= 16384) { try { const value = JSON.parse(Buffer.concat(chunks).toString('utf8')); error = value.error ?? null; } catch { /* Do not expose arbitrary HTML response bodies. */ } }
+          if (size <= 16384) { try { const value = JSON.parse(Buffer.concat(chunks).toString('utf8')); error = value.error ?? (value.detail != null ? { detail: value.detail } : null); } catch { /* Do not expose arbitrary HTML response bodies. */ } }
           resolve({ ok: false, status: response.statusCode, error });
         });
         return;

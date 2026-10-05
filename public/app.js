@@ -472,7 +472,7 @@ function viewRun(record, runtime = null) {
     stopReason: handoff.stop_reason ?? source.stop_reason ?? record?.stop_reason,
     rounds: handoff.rounds_executed ?? source.rounds_executed ?? source.round_records?.length ?? record?.rounds_executed ?? 0,
     currentRound: source.current_round ?? handoff.rounds_executed ?? record?.rounds_executed ?? (source.status === 'active' || record?.state === 'active' ? 1 : 0),
-    maxRounds: source.max_rounds ?? 5,
+    maxRounds: source.max_rounds ?? record?.max_rounds ?? handoff.max_rounds ?? 5,
     board: handoff.meeting_board ?? source.final_meeting_board ?? source.meeting_board ?? source.current_board ?? record?.final_meeting_board ?? { points: [] },
     facts: handoff.fact_ledger ?? source.final_fact_ledger ?? source.fact_ledger ?? record?.final_fact_ledger ?? [],
     solutions: handoff.solutions ?? source.solutions ?? record?.solutions ?? [],
@@ -480,6 +480,7 @@ function viewRun(record, runtime = null) {
     rejected: handoff.rejected_directions ?? source.rejected_directions ?? record?.rejected_directions ?? [],
     degradations: handoff.degradations ?? source.degradations ?? record?.degradations ?? [],
     decomposition: handoff.decomposition ?? source.decomposition ?? record?.decomposition ?? null,
+    react: handoff.react ?? source.react ?? record?.react ?? null,
     subproblemExpansion: handoff.subproblem_expansion ?? source.subproblem_expansion ?? record?.subproblem_expansion ?? null,
     roundRecords: handoff.round_records ?? source.round_records ?? record?.round_records ?? [],
     seatResponses: handoff.seat_responses ?? source.seat_responses ?? record?.seat_responses ?? [],
@@ -857,12 +858,22 @@ function renderExplorePromptTab(run) {
   `;
 }
 
+function renderExplorationReact(run, openDetails) {
+  const steps = run.react?.steps ?? [];
+  if (!steps.length) return '<div class="workbench-empty">正在准备探索 Agent 的初始上下文…</div>';
+  return `<div class="agent-steps">${steps.map((step, index) => {
+    const view = { ...step, id: `explore-${run.id}-${index}` };
+    return step.type === 'tool' ? renderToolStep(view, openDetails) : renderThinkingStep(view, openDetails);
+  }).join('')}</div>`;
+}
+
 function renderAhaWorkspace(input, live = false, openDetails = new Set()) {
   const run = input.board ? input : viewRun(input);
-  const defaultTab = run.subproblemExpansion || run.decomposition ? 'subproblems' : 'rounds';
+  const defaultTab = run.react ? 'react' : run.subproblemExpansion || run.decomposition ? 'subproblems' : 'rounds';
   const activeTab = state.ahaTabs[run.id] ?? defaultTab;
   const subproblemCount = run.board?.points?.filter(point => point.status === 'active' && point.type === 'subproblem').length ?? 0;
   const tabs = [
+    ...(run.react ? [['react', `探索过程 (${run.react.iteration ?? 0}步)`]] : []),
     ['subproblems', `子问题发散 (${subproblemCount})`],
     ['rounds', `4×2 席位推演 (${run.roundRecords?.length || run.currentRound || 0}轮)`],
     ['overview', `装配方案 (${run.solutions?.length ?? 0})`],
@@ -872,6 +883,7 @@ function renderAhaWorkspace(input, live = false, openDetails = new Set()) {
     ['prompt', `推演 Prompt`]
   ];
   const content = activeTab === 'overview' ? renderOverview(run)
+    : activeTab === 'react' ? renderExplorationReact(run, openDetails)
     : activeTab === 'facts' ? renderFacts(run)
     : activeTab === 'board' ? renderBoard(run)
     : activeTab === 'subproblems' ? renderSubproblemExpansion(run)

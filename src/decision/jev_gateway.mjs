@@ -48,6 +48,7 @@ function decisionData(response) {
 }
 
 function finiteProbability(value) {
+  if (value == null || value === '') return null;
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 && number <= 1 ? number : null;
 }
@@ -93,7 +94,8 @@ export class JevDecisionGateway {
           { signal }
         );
         if (!response.ok) {
-          const detail = redactSecrets(response.error?.message ?? response.error?.detail ?? '', this.apiKey, this.env);
+          const rawDetail = response.error?.message ?? response.error?.detail ?? '';
+          const detail = redactSecrets(typeof rawDetail === 'string' ? rawDetail : JSON.stringify(rawDetail), this.apiKey, this.env);
           const error = new Error(`Jev 服务 HTTP ${response.status}${detail ? `：${detail}` : ''}`);
           error.status = response.status;
           throw error;
@@ -165,6 +167,37 @@ export class JevDecisionGateway {
         model: data.model ?? this.config.model
       }
     };
+  }
+
+  async evaluateIdeaRedundancy({ parentProblem, referenceItems, candidate, logicalId = 'idea-dedup' }) {
+    const data = await this.decide({
+      phase: 'varina_idea_dedup', logicalId,
+      state: {
+        parent_problem: parentProblem,
+        meeting_board: referenceItems.map(({ id, candidate_id, type, status, text, failure_condition }) => ({
+          id: id ?? candidate_id, type, status: status ?? 'active', text, failure_condition
+        })),
+        item: { type: candidate.type, text: candidate.text, failure_condition: candidate.failure_condition }
+      },
+      questions: {
+        redundant: {
+          type: 'noul',
+          instructions: 'Judge whether item is already substantively covered by the active, non-subproblem ideas in meeting_board. Increment candidates with no status are active ideas. Compare the proposition, causal mechanism and failure conditions. Return True only if it adds no meaningful new mechanism, necessary condition, consequence, counterexample or corrected boundary. Shared topics or wording alone do not establish duplication. Opposite conclusions and different mechanisms must remain separate. Inactive points and subproblem questions are not answers and cannot cover an idea. If uncertain, return False. Do not rewrite, merge or generate any IDs.',
+          criteria: { true: 'DELETE: already covered; no substantive new information.', false: 'KEEP: adds substantive information, or duplication is uncertain.' }
+        }
+      }
+    });
+    const answer = data.answers.redundant;
+    if (!answer || typeof answer !== 'object') throw new Error('Jev 响应缺少 redundant 决策');
+    const probs = answer.probabilities ?? {};
+    let probability = typeof answer.noul === 'number' ? finiteProbability(answer.noul) : finiteProbability(probs.true ?? probs.TRUE ?? probs.True);
+    if (probability === null) {
+      const raw = answer.noul ?? answer.boolean ?? answer.value ?? answer.choice ?? answer.selected;
+      if (typeof raw === 'boolean') probability = raw ? 1 : 0;
+      else if (typeof raw === 'string' && /^(true|yes|false|no)$/i.test(raw)) probability = /^(true|yes)$/i.test(raw) ? 1 : 0;
+    }
+    if (probability === null) throw new Error('Jev redundant 缺少有效的 True 概率');
+    return { duplicate: probability >= this.config.subproblemDuplicateThreshold, probability, answer, model: data.model ?? this.config.model };
   }
 
   async evaluateSubproblemRedundancy({
@@ -246,7 +279,7 @@ ${renderItems(candidateSubproblems)}`;
       const answer = data.answers[key];
       if (!answer || typeof answer !== 'object') throw new Error(`Jev 响应缺少 ${key} 决策`);
       const probabilities = answer.probabilities && typeof answer.probabilities === 'object' ? answer.probabilities : {};
-      let probability = finiteProbability(probabilities.true ?? probabilities.TRUE ?? probabilities.True);
+      let probability = typeof answer.noul === 'number' ? finiteProbability(answer.noul) : finiteProbability(probabilities.true ?? probabilities.TRUE ?? probabilities.True);
       if (probability === null) {
         const raw = answer.noul ?? answer.boolean ?? answer.value ?? answer.choice ?? answer.selected;
         if (typeof raw === 'boolean') probability = raw ? 1 : 0;

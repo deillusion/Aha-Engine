@@ -3,6 +3,8 @@
  * Aligned with OpenAI Codex (codex-rs/core/src/compact.rs).
  */
 
+import { PROTECTED_RESULT_TOOLS } from './tool_result_budget.mjs';
+
 export const PRE_TURN_THRESHOLD_TOKENS = 768_000;
 export const MID_TURN_THRESHOLD_TOKENS = 896_000;
 
@@ -96,6 +98,8 @@ export function estimateMessageChars(message) {
   if (!message) return 0;
   let size = 0;
   if (typeof message.content === 'string') size += message.content.length;
+  if (typeof message.reasoning_content === 'string') size += message.reasoning_content.length;
+  if (Array.isArray(message.native_parts)) size += JSON.stringify(message.native_parts).length;
   if (Array.isArray(message.tool_calls)) {
     for (const tc of message.tool_calls) {
       size += (tc.name?.length || 0);
@@ -278,6 +282,9 @@ export function compactWorkingMessages(messages, {
   }
 
   let foldedCount = 0;
+  const protectedIds = new Set(messages.flatMap(message => (message.tool_calls ?? [])
+    .filter(call => PROTECTED_RESULT_TOOLS.has(call.function?.name ?? call.name))
+    .map(call => call.id)));
 
   // We scan backward to find the most recent assistant tool_calls batch.
   // Tool responses belonging to earlier iterations (prior to current iteration) can be safely folded.
@@ -286,9 +293,11 @@ export function compactWorkingMessages(messages, {
 
     // Case 1: Standard OpenAI tool response message
     if (msg.role === 'tool' && typeof msg.content === 'string') {
+      if (protectedIds.has(msg.tool_call_id)) continue;
       if (msg.content.length > maxFoldedChars) {
         try {
           const parsed = JSON.parse(msg.content);
+          if (PROTECTED_RESULT_TOOLS.has(parsed.name)) continue;
           if (!parsed._folded) {
             let briefResult = '';
             if (parsed.result) {

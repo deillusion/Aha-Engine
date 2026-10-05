@@ -15,8 +15,40 @@ export function buildPayload(model, request) {
         generationConfig.thinkingConfig = { thinkingLevel: generation.reasoning_effort.toUpperCase() };
       }
     }
-    if (responseSchema) { generationConfig.responseMimeType = 'application/json'; generationConfig.responseJsonSchema = responseSchema; }
-    return { systemInstruction: { parts: request.messages.filter(m => m.role === 'system').map(m => ({ text: m.content })) }, contents: request.messages.filter(m => m.role !== 'system').map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })), generationConfig };
+    if (responseSchema && !request.tools?.length) { generationConfig.responseMimeType = 'application/json'; generationConfig.responseJsonSchema = responseSchema; }
+    const callNames = new Map(request.messages.flatMap(message => (message.tool_calls ?? []).map(call => [call.id, call.function?.name])));
+    const nativeIds = new Map(request.messages.flatMap(message => (message.native_parts ?? []).filter(part => part.functionCall?.id).map(part => [part.functionCall.id, part.functionCall.id])));
+    const contents = request.messages.filter(message => message.role !== 'system').map(message => {
+      if (message.role === 'tool') {
+        let response;
+        try { response = JSON.parse(message.content); } catch { response = { text: message.content }; }
+        return { role: 'user', parts: [{ functionResponse: {
+          name: callNames.get(message.tool_call_id) ?? response.name, response,
+          ...(nativeIds.has(message.tool_call_id) ? { id: message.tool_call_id } : {})
+        } }] };
+      }
+      const parts = message.native_parts ?? [
+        ...(message.content ? [{ text: message.content }] : []),
+        ...(message.tool_calls ?? []).map(call => ({ functionCall: {
+          name: call.function.name, args: JSON.parse(call.function.arguments || '{}')
+        } }))
+      ];
+      return { role: message.role === 'assistant' ? 'model' : 'user', parts: parts.length ? parts : [{ text: '' }] };
+    });
+    // Native function responses from a batch belong to one user turn.
+    const grouped = [];
+    for (const content of contents) {
+      const previous = grouped.at(-1);
+      if (content.parts.every(part => part.functionResponse) && previous?.parts.every(part => part.functionResponse)) previous.parts.push(...content.parts);
+      else grouped.push(content);
+    }
+    return {
+      systemInstruction: { parts: request.messages.filter(m => m.role === 'system').map(m => ({ text: m.content })) },
+      contents: grouped, generationConfig,
+      ...(request.tools?.length ? { tools: [{ functionDeclarations: request.tools.map(tool => ({
+        name: tool.function.name, description: tool.function.description, parametersJsonSchema: tool.function.parameters
+      })) }] } : {})
+    };
   }
   const payload = { model: model.model, messages: structuredClone(request.messages), [model.tokenParameter]: effectiveOutputLimit };
   if (model.supportsTemperature && generation.temperature !== undefined) payload.temperature = generation.temperature;
@@ -63,8 +95,14 @@ export async function chatCompletion(model, request, { signal, timeoutMs, payloa
       onChunk({ type: 'thinking', text: thinking });
       onChunk({ type: 'thinking_done' });
     }
-    const result = { text: (candidate?.content?.parts ?? []).filter(p => !p.thought).map(p => p.text ?? '').join(''), thinking, usage: u ? { prompt_tokens: u.promptTokenCount ?? 0, completion_tokens: (u.candidatesTokenCount ?? 0) + (u.thoughtsTokenCount ?? 0), total_tokens: u.totalTokenCount ?? null, cached_prompt_tokens: u.cachedContentTokenCount ?? 0 } : null, finish_reason: candidate?.finishReason === 'STOP' ? 'stop' : candidate?.finishReason ?? 'unknown', resolved_model: data.modelVersion ?? model.model, provider_request_id: response.requestId };
-    if (result.finish_reason !== 'stop' || !result.text.trim()) { const error = new Error(`Gemini 输出不完整或被拒绝：${result.finish_reason}`); error.result = result; throw error; }
+    const nativeCalls = (candidate?.content?.parts ?? []).filter(part => part.functionCall).map((part, index) => ({
+      id: part.functionCall.id ?? `gemini-call-${index + 1}-${Date.now()}`, type: 'function',
+      function: { name: part.functionCall.name, arguments: JSON.stringify(part.functionCall.args ?? {}) }
+    }));
+    const result = { text: (candidate?.content?.parts ?? []).filter(p => !p.thought).map(p => p.text ?? '').join(''),
+      tool_calls: nativeCalls.length ? nativeCalls : null, raw_native_parts: candidate?.content?.parts,
+      thinking, usage: u ? { prompt_tokens: u.promptTokenCount ?? 0, completion_tokens: (u.candidatesTokenCount ?? 0) + (u.thoughtsTokenCount ?? 0), total_tokens: u.totalTokenCount ?? null, cached_prompt_tokens: u.cachedContentTokenCount ?? 0 } : null, finish_reason: candidate?.finishReason === 'STOP' ? 'stop' : candidate?.finishReason ?? 'unknown', resolved_model: data.modelVersion ?? model.model, provider_request_id: response.requestId };
+    if (result.finish_reason !== 'stop' || (!result.text.trim() && !result.tool_calls?.length)) { const error = new Error(`Gemini 输出不完整或被拒绝：${result.finish_reason}`); error.result = result; throw error; }
     return result;
   }
   const choice = data.choices?.[0];

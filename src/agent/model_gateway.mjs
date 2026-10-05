@@ -174,6 +174,23 @@ function mockAssembly(request) {
 }
 
 export function mockStructuredCompletion(request) {
+  if (request.phase === 'varina_react') {
+    if (request.context.round < request.context.target_rounds) return {
+      message: '继续探索当前问题。',
+      tool_calls: [{ id: `diverge-${request.context.iteration}`, name: 'Diverge', arguments_json: '{}' }], done: false
+    };
+    const points = JSON.parse(request.messages[1].content).initial_meeting_board.points;
+    const items = new Map(points.map(point => [point.id, point]));
+    for (const message of request.messages.filter(message => message.role === 'tool')) {
+      const data = JSON.parse(message.content);
+      for (const item of [...(data.result?.added_items ?? []), ...(data.result?.modified_items ?? []), ...(data.result?.item ? [data.result.item] : [])]) items.set(item.id, item);
+    }
+    const assembly = mockAssembly({ context: { board: { points: [...items.values()] } } });
+    return { message: '', tool_calls: [{ id: `finish-${request.context.iteration}`, name: 'Finish', arguments_json: JSON.stringify({
+      answer: `Varina 已完成 ${request.context.round} 轮探索，形成 ${assembly.solutions.length} 个候选方向。离线模拟仅演示流程，实际机制与事实依赖需要真实模型和项目资料核查。`,
+      ...assembly
+    }) }], done: false };
+  }
   if (request.phase === 'agent_turn') return mockAgentTurn(request);
   if (request.phase === 'varina_gate') return mockVarinaGate(request);
   if (request.phase === 'baseline_extraction') return mockBaselineExtraction(request);
@@ -236,7 +253,7 @@ export class ModelGateway {
           });
           call.usage = result.usage ?? null;
           call.finish_reason = result.finish_reason;
-          if (phase === 'agent_turn') {
+          if (phase === 'agent_turn' || phase === 'varina_react') {
             if (result.tool_calls?.length) {
               const tool_calls = result.tool_calls.map((tc, index) => {
                 const id = tc.id || `call_${index + 1}_${Date.now()}`;
@@ -249,6 +266,7 @@ export class ModelGateway {
                 message: result.text || '',
                 tool_calls,
                 raw_tool_calls: result.tool_calls,
+                raw_native_parts: result.raw_native_parts,
                 done: false,
                 thought: result.thinking || ''
               };
@@ -326,7 +344,7 @@ export class ModelGateway {
 export function generationFor(config, phase) {
   const fallback = { temperature: 0.2, reasoning_effort: 'low', max_output_tokens: 8192 };
   if (!config?.generation) return fallback;
-  if (phase === 'agent_turn') return config.generation.agent ?? config.generation.chair ?? fallback;
+  if (phase === 'agent_turn' || phase === 'varina_react') return config.generation.agent ?? config.generation.chair ?? fallback;
   if (phase === 'varina_gate') return config.generation.varina_gate ?? config.generation.decision ?? { temperature: 0, reasoning_effort: 'low', max_output_tokens: 512 };
   if (phase === 'baseline_extraction') return config.generation.baseline_extraction ?? { temperature: 0, reasoning_effort: 'low', max_output_tokens: 8192 };
   if (phase === 'varina_delta') return config.generation.varina_delta ?? config.generation.chair ?? { temperature: 0.2, reasoning_effort: 'low', max_output_tokens: 4096 };
