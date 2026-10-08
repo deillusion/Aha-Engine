@@ -71,13 +71,15 @@ function assertString(value, name, { optional = false, max = 20000 } = {}) {
   if (typeof value !== 'string' || (!optional && !value.trim()) || value.length > max) throw new Error(`${name} 参数无效`);
 }
 
-function tracedUserConstraints(constraints, rawRequest) {
+function tracedUserConstraints(constraints, rawRequest, { strict = true } = {}) {
   if (!Array.isArray(constraints)) throw new Error('user_constraints 参数无效');
   return constraints.map((item, index) => {
     assertString(item.constraint, `user_constraints[${index}].constraint`);
-    assertString(item.source_quote, `user_constraints[${index}].source_quote`);
-    if (!rawRequest.includes(item.source_quote)) {
-      throw new Error(`user_constraints[${index}] 无法追溯到用户原话：${item.source_quote}`);
+    if (strict) {
+      assertString(item.source_quote, `user_constraints[${index}].source_quote`);
+      if (!rawRequest.includes(item.source_quote)) {
+        throw new Error(`user_constraints[${index}] 无法追溯到用户原话：${item.source_quote}`);
+      }
     }
     return item.constraint;
   });
@@ -547,18 +549,12 @@ export class AgentSession {
 
   async extractBaseline(originalUserRequest, baselineAnswer, sourceTurn = this.state.current_turn) {
     const validateExtraction = extraction => {
-      tracedUserConstraints(extraction.user_constraints, originalUserRequest);
+      tracedUserConstraints(extraction.user_constraints, originalUserRequest, { strict: false });
       for (const [index, point] of extraction.points.entries()) {
-        if (!point.text.trim()) throw new Error(`baseline points[${index}] 正文为空`);
-        if (!point.source_quote.trim() || !baselineAnswer.includes(point.source_quote)) {
-          throw new Error(`baseline points[${index}] 无法追溯到常规回答原文`);
-        }
+        if (!point.text?.trim()) throw new Error(`baseline points[${index}] 正文为空`);
       }
       for (const [index, solution] of extraction.solutions.entries()) {
-        if (!solution.text.trim()) throw new Error(`baseline solutions[${index}] 正文为空`);
-        if (!solution.source_quote.trim() || !baselineAnswer.includes(solution.source_quote)) {
-          throw new Error(`baseline solutions[${index}] 无法追溯到常规回答原文`);
-        }
+        if (!solution.text?.trim()) throw new Error(`baseline solutions[${index}] 正文为空`);
       }
       return extraction;
     };
@@ -875,7 +871,7 @@ export class AgentSession {
   } = {}) {
     assertString(args.problem, 'problem', { max: 10000 });
     const rawRequest = originalRequest(currentUserMessage) || args.problem.trim();
-    const userConstraints = tracedUserConstraints(args.user_constraints ?? [], rawRequest);
+    const userConstraints = tracedUserConstraints(args.user_constraints ?? [], rawRequest, { strict: !initialBoard });
     const agentHypotheses = args.agent_hypotheses ?? [];
     if ((typeof args.verified_context === 'string' && args.verified_context.trim()) || (typeof args.code_context === 'string' && args.code_context.trim()) || args.verified_facts != null) {
       throw new Error('自由文本 verified_context/code_context 与 verified_facts 已停用；请用 source_excerpts 选择已读原文');

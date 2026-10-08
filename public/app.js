@@ -33,37 +33,72 @@ const state = {
   activities: [], ahaTabs: {}, subproblemSelections: {}, folder: null, pendingMessage: '',
   ahaEnabled: (localStorage.getItem('varina_enabled') ?? localStorage.getItem('aha_enabled')) !== 'false',
   editingConfig: null,
+  activeSettingsTab: 'general',
   userScrolledUp: false,
   forceScrollToBottom: false,
   collapsedFolders: loadCollapsedFolders(),
   scrollCache: new Map()
 };
 
+function getPreferences() {
+  return {
+    varyTriggerMode: localStorage.getItem('vary_trigger_mode') || 'smart',
+    sendShortcut: localStorage.getItem('send_shortcut') || 'enter',
+    toolStepsDisplay: localStorage.getItem('tool_steps_display') || 'compact',
+    messageFontSize: localStorage.getItem('message_font_size') || 'medium'
+  };
+}
+
+function savePreference(key, value) {
+  localStorage.setItem(key, value);
+  applyPreferences();
+}
+
+function applyPreferences() {
+  const prefs = getPreferences();
+  const sizeMap = { small: '13px', medium: '14.5px', large: '16px' };
+  document.documentElement.style.setProperty('--message-font-size', sizeMap[prefs.messageFontSize] || '14.5px');
+
+  if (prefs.toolStepsDisplay === 'compact') {
+    document.body.classList.add('tool-steps-compact');
+  } else {
+    document.body.classList.remove('tool-steps-compact');
+  }
+
+  updateVarinaToggle();
+}
+
 function getModelIcon(modelId = '') {
-  const upper = String(modelId).toUpperCase();
-  if (upper.includes('DEEPSEEK')) return '🐳';
-  if (upper.includes('GEMINI')) return '✨';
-  if (upper.includes('GLM')) return '🔮';
-  if (upper.includes('CLAUDE') || upper.includes('ANTHROPIC')) return '🧠';
-  if (upper.includes('OPENAI') || upper.includes('GPT')) return '🟢';
-  if (upper.includes('SILICON')) return '⚡';
-  if (upper.includes('QWEN')) return '🌐';
-  if (upper.includes('OLLAMA') || upper.includes('LOCAL') || upper.includes('LLAMA')) return '🦙';
-  return '🤖';
+  return '';
 }
 
 function updateVarinaToggle() {
   const btn = $('#aha-toggle');
   const status = $('#aha-toggle-status');
+  const label = btn?.querySelector('.aha-toggle-label') || btn?.querySelector('.varina-toggle-label');
   if (!btn) return;
-  if (state.ahaEnabled) {
-    btn.className = 'aha-toggle-pill active';
-    btn.title = 'Varina 深度探索已开启：遇到机制、规则或困境将自动启动 8 席位多视角推演（点击可关闭）';
-    if (status) status.textContent = '开启';
-  } else {
+  const prefs = getPreferences();
+  const mode = prefs.varyTriggerMode;
+
+  if (label) label.textContent = 'Vary 探索';
+
+  if (mode === 'never') {
     btn.className = 'aha-toggle-pill inactive';
-    btn.title = 'Varina 深度探索已关闭：仅日常对话与文件读写（点击可开启）';
+    btn.title = 'Vary 探索策略：总是关闭（点击切换模式）';
     if (status) status.textContent = '关闭';
+  } else if (mode === 'always') {
+    btn.className = 'aha-toggle-pill active';
+    btn.title = 'Vary 探索策略：总是开启（点击切换模式）';
+    if (status) status.textContent = '常开';
+  } else if (mode === 'ask') {
+    btn.className = 'aha-toggle-pill active';
+    btn.title = 'Vary 探索策略：每次询问（点击切换模式）';
+    if (status) status.textContent = '询问';
+  } else {
+    // smart
+    btn.className = 'aha-toggle-pill active';
+    btn.title = 'Vary 探索策略：智能判定（推荐，遇到机制分歧自动推演，点击切换模式）';
+    if (status) status.textContent = '智能';
   }
 }
 
@@ -78,11 +113,12 @@ function updateComposerModel() {
   const mainRoleModelId = cfg.roles?.main ?? cfg.roles?.chair;
   const modelObj = cfg.models?.find(m => m.id === mainRoleModelId) || cfg.models?.[0];
   if (modelObj) {
-    const icon = getModelIcon(modelObj.id);
-    labelEl.textContent = `${icon} ${modelObj.id} · ${modelObj.model || ''}`.trim();
-    labelEl.title = `主对话模型: ${modelObj.id} (${modelObj.model || ''}) - 点击配置大模型与规则`;
+    const pName = modelObj.providerName || modelObj.id.split('_')[0];
+    const mName = modelObj.displayName || modelObj.model || modelObj.id;
+    labelEl.textContent = `${pName} · ${mName}`.trim();
+    labelEl.title = `主对话模型: ${pName} · ${mName} - 点击配置大模型与规则`;
   } else {
-    labelEl.textContent = '⚙️ 配置模型';
+    labelEl.textContent = '配置模型';
   }
 }
 
@@ -1579,14 +1615,14 @@ async function sendMessage(message) {
 
 const MODEL_PRESETS = [
   {
-    label: 'DeepSeek 官方', icon: '🐳', id: 'DEEPSEEK', model: 'deepseek-flash',
+    label: 'DeepSeek 官方', id: 'DEEPSEEK', model: 'deepseek-flash',
     baseUrl: 'https://api.deepseek.com', protocol: 'chat',
     tokenParameter: 'max_tokens', structuredOutput: 'json_object',
     supportsTemperature: true, supportsReasoning: true, supportsSeed: false,
     modelsList: ['deepseek-flash', 'deepseek-chat', 'deepseek-reasoner']
   },
   {
-    label: 'Google Gemini', icon: '✨', id: 'GEMINI', model: 'gemini-3.7-flash',
+    label: 'Google Gemini', id: 'GEMINI', model: 'gemini-3.7-flash',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', protocol: 'chat',
     tokenParameter: 'max_tokens', structuredOutput: 'json_schema',
     supportsTemperature: true, supportsReasoning: true, supportsSeed: false,
@@ -1594,7 +1630,7 @@ const MODEL_PRESETS = [
     modelsList: ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-2.5-pro']
   },
   {
-    label: '智谱清言 GLM', icon: '🔮', id: 'GLM', model: 'GLM-5.3-Flash',
+    label: '智谱清言 GLM', id: 'GLM', model: 'GLM-5.3-Flash',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4', protocol: 'chat',
     tokenParameter: 'max_tokens', structuredOutput: 'json_object',
     supportsTemperature: true, supportsReasoning: true, supportsSeed: false,
@@ -1602,35 +1638,35 @@ const MODEL_PRESETS = [
     modelsList: ['GLM-5.3-Flash', 'glm-4-plus', 'glm-4-flash']
   },
   {
-    label: 'Anthropic Claude', icon: '🧠', id: 'CLAUDE', model: 'claude-sonnet-4-5',
+    label: 'Anthropic Claude', id: 'CLAUDE', model: 'claude-sonnet-4-5',
     baseUrl: 'https://api.anthropic.com/v1', protocol: 'chat',
     tokenParameter: 'max_tokens', structuredOutput: 'json_object',
     supportsTemperature: true, supportsReasoning: true, supportsSeed: false,
     modelsList: ['claude-sonnet-4-5', 'claude-3-7-sonnet', 'claude-3-5-haiku']
   },
   {
-    label: 'OpenAI 官方', icon: '🟢', id: 'OPENAI', model: 'gpt-4o',
+    label: 'OpenAI 官方', id: 'OPENAI', model: 'gpt-4o',
     baseUrl: 'https://api.openai.com/v1', protocol: 'chat',
     tokenParameter: 'max_completion_tokens', structuredOutput: 'json_object',
     supportsTemperature: true, supportsReasoning: true, supportsSeed: true,
     modelsList: ['gpt-4o', 'gpt-4o-mini', 'o1', 'o3-mini']
   },
   {
-    label: '硅基流动 SiliconFlow', icon: '⚡', id: 'SILICONFLOW', model: 'deepseek-ai/DeepSeek-V3',
+    label: '硅基流动 SiliconFlow', id: 'SILICONFLOW', model: 'deepseek-ai/DeepSeek-V3',
     baseUrl: 'https://api.siliconflow.cn/v1', protocol: 'chat',
     tokenParameter: 'max_tokens', structuredOutput: 'json_object',
     supportsTemperature: true, supportsReasoning: true, supportsSeed: false,
     modelsList: ['deepseek-ai/DeepSeek-V3', 'deepseek-ai/DeepSeek-R1', 'Qwen/Qwen2.5-72B-Instruct']
   },
   {
-    label: '通义千问 DashScope', icon: '🌐', id: 'QWEN', model: 'qwen-plus',
+    label: '通义千问 DashScope', id: 'QWEN', model: 'qwen-plus',
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', protocol: 'chat',
     tokenParameter: 'max_tokens', structuredOutput: 'json_object',
     supportsTemperature: true, supportsReasoning: true, supportsSeed: false,
     modelsList: ['qwen-plus', 'qwen-max', 'qwen-turbo']
   },
   {
-    label: '本地 Ollama / vLLM', icon: '🦙', id: 'LOCAL_OLLAMA', model: 'llama3:latest',
+    label: '本地 Ollama / vLLM', id: 'LOCAL_OLLAMA', model: 'llama3:latest',
     baseUrl: 'http://127.0.0.1:11434/v1', protocol: 'chat', isKeyless: true,
     tokenParameter: 'max_tokens', structuredOutput: 'json_object',
     supportsTemperature: true, supportsReasoning: false, supportsSeed: true,
@@ -1638,31 +1674,94 @@ const MODEL_PRESETS = [
   }
 ];
 
+function syncProviderFieldsToState(providerId) {
+  if (!state.editingConfig || !providerId) return;
+  const keyInput = document.getElementById(`dsh-key-${providerId}`);
+  const urlInput = document.getElementById(`dsh-url-${providerId}`);
+  const protoSelect = document.getElementById(`dsh-proto-${providerId}`);
+  const catalogRows = document.querySelectorAll(`.dsh-catalog-row[data-provider-id="${providerId}"]`);
+
+  const pKey = keyInput?.value?.trim() || '';
+  const pUrl = urlInput?.value?.trim() || '';
+  const pProto = protoSelect?.value || 'chat';
+
+  const newCatalog = [];
+  catalogRows.forEach(row => {
+    const origId = row.dataset.catalogId;
+    const model = row.querySelector('[data-catalog-field="model"]')?.value?.trim() || '';
+    const displayName = row.querySelector('[data-catalog-field="displayName"]')?.value?.trim() || model;
+    if (model) {
+      newCatalog.push({ id: origId, model, displayName });
+    }
+  });
+
+  if (newCatalog.length === 0) return;
+
+  const isMatch = m => m.providerId === providerId || (!m.providerId && (m.id === providerId || m.id.startsWith(`${providerId}_`)));
+  const existingProviderModels = state.editingConfig.models.filter(isMatch);
+  const baseModel = existingProviderModels[0] || MODEL_PRESETS.find(p => p.id === providerId) || {};
+  const providerName = baseModel.providerName || MODEL_PRESETS.find(p => p.id === providerId)?.label?.split(' ')[0] || providerId;
+
+  const keptIds = new Set(newCatalog.map(item => item.id).filter(Boolean));
+  state.editingConfig.models = state.editingConfig.models.filter(m => {
+    if (!isMatch(m)) return true;
+    return keptIds.has(m.id);
+  });
+
+  newCatalog.forEach((item, idx) => {
+    let existing = state.editingConfig.models.find(m => m.id === item.id);
+    if (!existing) {
+      let baseSafe = `${providerId}_${item.model.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+      if (idx === 0 && !state.editingConfig.models.some(m => m.id === providerId)) {
+        baseSafe = providerId;
+      }
+      let finalId = baseSafe;
+      let counter = 2;
+      while (state.editingConfig.models.some(m => m.id === finalId)) {
+        finalId = `${baseSafe}_${counter++}`;
+      }
+
+      existing = {
+        id: finalId,
+        model: item.model,
+        displayName: item.displayName,
+        baseUrl: pUrl || baseModel.baseUrl || '',
+        protocol: pProto,
+        tokenParameter: baseModel.tokenParameter || 'max_tokens',
+        structuredOutput: baseModel.structuredOutput || 'json_object',
+        supportsTemperature: baseModel.supportsTemperature ?? true,
+        supportsReasoning: baseModel.supportsReasoning ?? true,
+        supportsSeed: baseModel.supportsSeed ?? false,
+        providerId,
+        providerName,
+        hasKey: baseModel.hasKey ?? false,
+        maskedKey: baseModel.maskedKey || ''
+      };
+      state.editingConfig.models.push(existing);
+    } else {
+      existing.model = item.model;
+      existing.displayName = item.displayName;
+      if (pUrl) existing.baseUrl = pUrl;
+      existing.protocol = pProto;
+      existing.providerId = providerId;
+      existing.providerName = providerName;
+    }
+
+    if (pKey) {
+      existing.apiKey = pKey;
+      existing.hasKey = true;
+    }
+  });
+}
+
 function syncFieldsToState() {
   if (!state.editingConfig) return;
   const mainSelect = $('#cfg-role-main');
   if (mainSelect) state.editingConfig.roles.main = mainSelect.value;
 
-  const modelCards = document.querySelectorAll('.model-card-item[data-model-id]');
-  modelCards.forEach(card => {
-    const origId = card.dataset.modelId;
-    const model = state.editingConfig.models.find(m => m.id === origId);
-    if (!model) return;
-    const idInput = card.querySelector('[data-cfg-field="id"]');
-    const modelInput = card.querySelector('[data-cfg-field="model"]');
-    const baseUrlInput = card.querySelector('[data-cfg-field="baseUrl"]');
-    const protocolSelect = card.querySelector('[data-cfg-field="protocol"]');
-    const keyInput = card.querySelector('[data-cfg-field="apiKey"]');
-
-    if (idInput && idInput.value.trim()) model.id = idInput.value.trim();
-    if (modelInput) model.model = modelInput.value.trim();
-    if (baseUrlInput) model.baseUrl = baseUrlInput.value.trim();
-    if (protocolSelect) model.protocol = protocolSelect.value;
-    if (keyInput && keyInput.value.trim()) {
-      model.apiKey = keyInput.value.trim();
-      model.hasKey = true;
-    }
-  });
+  if (state.editingProviderId) {
+    syncProviderFieldsToState(state.editingProviderId);
+  }
 
   document.querySelectorAll('[data-cfg-role]').forEach(select => {
     state.editingConfig.roles[select.dataset.cfgRole] = select.value;
@@ -1679,78 +1778,420 @@ function syncFieldsToState() {
   }
 }
 
-function renderSettingsModalContent() {
-  const container = $('#model-settings');
-  if (!container || !state.editingConfig) return;
+function getDshProviders(models = []) {
+  const map = new Map();
+  for (const m of models) {
+    let pId = m.providerId;
+    let pName = m.providerName;
+    let officialId = '';
 
-  const c = state.editingConfig;
-  const models = c.models || [];
-  const currentMain = c.roles?.main || c.roles?.chair || models[0]?.id || '';
+    if (!pId) {
+      const preset = MODEL_PRESETS.find(p =>
+        m.id === p.id ||
+        m.id.toUpperCase().startsWith(`${p.id}_`) ||
+        (m.baseUrl && p.baseUrl && m.baseUrl.replace(/\/+$/, '') === p.baseUrl.replace(/\/+$/, '')) ||
+        (p.id === 'DEEPSEEK' && m.baseUrl?.includes('deepseek.com')) ||
+        (p.id === 'OPENAI' && m.baseUrl?.includes('openai.com')) ||
+        (p.id === 'GEMINI' && m.baseUrl?.includes('googleapis.com')) ||
+        (p.id === 'CLAUDE' && m.baseUrl?.includes('anthropic.com')) ||
+        (p.id === 'GLM' && m.baseUrl?.includes('bigmodel.cn')) ||
+        (p.id === 'SILICONFLOW' && m.baseUrl?.includes('siliconflow.cn')) ||
+        (p.id === 'QWEN' && m.baseUrl?.includes('dashscope.aliyuncs.com')) ||
+        (p.id === 'LOCAL_OLLAMA' && (m.baseUrl?.includes('11434') || m.isKeyless))
+      );
 
-  const modelOptionsHtml = models.map(m => `
-    <option value="${escapeHtml(m.id)}" ${m.id === currentMain ? 'selected' : ''}>
-      ${getModelIcon(m.id)} ${escapeHtml(m.id)} (${escapeHtml(m.model || '未设定')})
-    </option>
-  `).join('');
+      if (preset) {
+        pId = preset.id;
+        pName = preset.label.split(' ')[0];
+        officialId = preset.id.toLowerCase();
+      } else {
+        pId = m.id.split('_')[0] || m.id;
+        pName = m.name || pId;
+        officialId = pId.toLowerCase();
+      }
+    } else {
+      officialId = (m.officialId || pId).toLowerCase();
+    }
 
-  const modelCardsHtml = models.map(m => {
-    const isLocal = m.isKeyless || (m.baseUrl && (m.baseUrl.includes('localhost') || m.baseUrl.includes('127.0.0.1')));
-    const statusClass = m.hasKey || isLocal ? 'ready' : 'unconfigured';
-    const statusText = m.hasKey
-      ? (m.keySource === 'env' ? '🟢 环境变量生效' : '🟢 密钥已配置')
-      : (isLocal ? '🟢 本地免密钥' : '⚪ 未配置密钥');
+    if (!map.has(pId)) {
+      const isLocal = Boolean(m.isKeyless || (m.baseUrl && (m.baseUrl.includes('localhost') || m.baseUrl.includes('127.0.0.1'))));
+      map.set(pId, {
+        id: pId,
+        name: pName || pId,
+        officialId: officialId || pId.toLowerCase(),
+        baseUrl: m.baseUrl || '',
+        protocol: m.protocol || 'chat',
+        apiKey: m.apiKey || '',
+        hasKey: Boolean(m.hasKey || m.apiKey),
+        maskedKey: m.maskedKey || (m.apiKey ? '••••••••' : ''),
+        keySource: m.keySource || (m.apiKey ? 'config' : 'none'),
+        isLocal,
+        isKeyless: Boolean(m.isKeyless || isLocal),
+        tokenParameter: m.tokenParameter || 'max_tokens',
+        structuredOutput: m.structuredOutput || 'json_object',
+        supportsTemperature: m.supportsTemperature ?? true,
+        supportsReasoning: m.supportsReasoning ?? true,
+        supportsSeed: m.supportsSeed ?? false,
+        catalog: []
+      });
+    }
+
+    const provider = map.get(pId);
+    if (m.hasKey || m.apiKey) {
+      provider.hasKey = true;
+      if (m.maskedKey) provider.maskedKey = m.maskedKey;
+      if (m.apiKey) provider.apiKey = m.apiKey;
+    }
+    provider.catalog.push({
+      id: m.id,
+      model: m.model || '',
+      displayName: m.displayName || m.name || m.model || m.id
+    });
+  }
+
+  return Array.from(map.values());
+}
+
+function renderGeneralTabContent() {
+  const prefs = getPreferences();
+  return `
+    <div class="settings-section">
+      <div class="settings-section-title">会话与推演偏好</div>
+      
+      <div class="settings-row">
+        <div class="settings-row-info">
+          <div class="settings-row-title">Vary 深度探索触发策略</div>
+          <div class="settings-row-desc">控制何时启动 8 席位多视角发散推演；也可在发送框旁随时临时切换。</div>
+        </div>
+        <div class="settings-row-control">
+          <select class="settings-select" data-pref="vary_trigger_mode">
+            <option value="smart" ${prefs.varyTriggerMode === 'smart' ? 'selected' : ''}>智能判定 (推荐)</option>
+            <option value="ask" ${prefs.varyTriggerMode === 'ask' ? 'selected' : ''}>每次询问</option>
+            <option value="always" ${prefs.varyTriggerMode === 'always' ? 'selected' : ''}>总是开启</option>
+            <option value="never" ${prefs.varyTriggerMode === 'never' ? 'selected' : ''}>总是关闭</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-info">
+          <div class="settings-row-title">消息发送快捷键</div>
+          <div class="settings-row-desc">选择输入框的回车发送习惯；长文本机制方案建议使用 Cmd/Ctrl+Enter 防误触。</div>
+        </div>
+        <div class="settings-row-control">
+          <select class="settings-select" data-pref="send_shortcut">
+            <option value="enter" ${prefs.sendShortcut === 'enter' ? 'selected' : ''}>Enter 发送 (Shift+Enter 换行)</option>
+            <option value="ctrl_enter" ${prefs.sendShortcut === 'ctrl_enter' ? 'selected' : ''}>Cmd/Ctrl+Enter 发送 (Enter 换行)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-info">
+          <div class="settings-row-title">工作步骤展示</div>
+          <div class="settings-row-desc">工具调用细节（文件读取、终端执行等）的展示程度。</div>
+        </div>
+        <div class="settings-row-control">
+          <select class="settings-select" data-pref="tool_steps_display">
+            <option value="compact" ${prefs.toolStepsDisplay === 'compact' ? 'selected' : ''}>精简收起 (默认)</option>
+            <option value="expanded" ${prefs.toolStepsDisplay === 'expanded' ? 'selected' : ''}>详细展开</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-info">
+          <div class="settings-row-title">会话内容字号</div>
+          <div class="settings-row-desc">控制消息正文、代码和机制推演的文本展示字号。</div>
+        </div>
+        <div class="settings-row-control">
+          <select class="settings-select" data-pref="message_font_size">
+            <option value="small" ${prefs.messageFontSize === 'small' ? 'selected' : ''}>紧凑 (13px)</option>
+            <option value="medium" ${prefs.messageFontSize === 'medium' ? 'selected' : ''}>标准 (14.5px)</option>
+            <option value="large" ${prefs.messageFontSize === 'large' ? 'selected' : ''}>舒适 (16px)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="settings-footer-note">当前版本：0.2.0-prototype · Aha Engine & Vary</div>
+  `;
+}
+
+function renderModelsTabContent(c, models, currentMain) {
+  const providers = getDshProviders(models);
+  const isAdding = state.isAddingProvider === true;
+  const editingPId = state.editingProviderId;
+
+  const mainModelOptionsHtml = models.map(m => {
+    const pName = m.providerName || m.id.split('_')[0];
+    const mName = m.displayName || m.model || m.id;
+    return `<option value="${escapeHtml(m.id)}" ${m.id === currentMain ? 'selected' : ''}>${escapeHtml(pName)} · ${escapeHtml(mName)}</option>`;
+  }).join('');
+
+  const providerCardsHtml = providers.map(p => {
+    const isEditing = editingPId === p.id;
+    const isConfigured = p.hasKey || p.isLocal;
+
+    if (!isEditing) {
+      return `
+        <div class="dsh-provider-card" data-provider-id="${escapeHtml(p.id)}">
+          <div class="dsh-provider-row">
+            <div class="dsh-provider-title-wrap">
+              <span class="dsh-provider-name">${escapeHtml(p.name)}</span>
+              <span class="dsh-status-dot ${isConfigured ? 'online' : 'offline'}" title="${isConfigured ? '已配置密钥或本地可用' : '未配置密钥'}"></span>
+              <span class="dsh-provider-meta">${p.catalog.length} 个模型</span>
+            </div>
+            <div class="dsh-provider-actions">
+              <button type="button" class="dsh-btn" data-test-provider="${escapeHtml(p.id)}">测试</button>
+              <button type="button" class="dsh-btn" data-edit-provider="${escapeHtml(p.id)}">编辑</button>
+            </div>
+          </div>
+          <div id="dsh-test-result-${escapeHtml(p.id)}" class="test-result-indicator" hidden style="margin: 0 18px 12px"></div>
+        </div>
+      `;
+    }
+
+    const catalogRowsHtml = p.catalog.map(item => `
+      <div class="dsh-catalog-row" data-catalog-id="${escapeHtml(item.id)}" data-provider-id="${escapeHtml(p.id)}">
+        <input type="text" class="dsh-input" data-catalog-field="model" value="${escapeHtml(item.model)}" placeholder="模型标识 (如 gpt-6.1-sol)">
+        <input type="text" class="dsh-input" data-catalog-field="displayName" value="${escapeHtml(item.displayName)}" placeholder="显示名称 (如 GPT 6.1 Sol)">
+        <button type="button" class="dsh-btn dsh-btn-danger" data-remove-catalog-row="${escapeHtml(item.id)}" title="移除模型">删除</button>
+      </div>
+    `).join('');
 
     return `
-      <div class="model-card-item" data-model-id="${escapeHtml(m.id)}">
-        <div class="model-card-header">
-          <div class="model-card-title-group">
-            <span class="model-card-id">${getModelIcon(m.id)} ${escapeHtml(m.id)}</span>
-            <span class="muted">· ${escapeHtml(m.model || '未选型')}</span>
-            <span class="model-protocol-chip">${m.protocol === 'gemini' ? 'Gemini 原生' : 'OpenAI 兼容'}</span>
-            <span class="model-status-chip ${statusClass}">${statusText}</span>
-          </div>
-          <div class="model-card-actions">
-            <button type="button" class="model-action-btn" data-test-model="${escapeHtml(m.id)}">⚡ 测试连通性</button>
-            <button type="button" class="model-action-btn" data-discover-model="${escapeHtml(m.id)}">🔍 探测模型</button>
-            ${models.length > 1 ? `<button type="button" class="model-action-btn delete" data-delete-model="${escapeHtml(m.id)}">🗑️ 删除</button>` : ''}
-          </div>
-        </div>
-
-        <div class="model-fields-grid">
-          <label>
-            <span>模型标识 ID (唯一)</span>
-            <input type="text" data-cfg-field="id" data-model="${escapeHtml(m.id)}" value="${escapeHtml(m.id)}" placeholder="如 DEEPSEEK, GEMINI">
-          </label>
-          <label>
-            <span>模型名称 (Model Name)</span>
-            <input type="text" data-cfg-field="model" data-model="${escapeHtml(m.id)}" value="${escapeHtml(m.model || '')}" placeholder="如 deepseek-flash, gpt-4o">
-          </label>
-          <label>
-            <span>服务端点 (Base URL)</span>
-            <input type="text" data-cfg-field="baseUrl" data-model="${escapeHtml(m.id)}" value="${escapeHtml(m.baseUrl || '')}" placeholder="https://api.example.com/v1">
-          </label>
-          <label>
-            <span>协议规范</span>
-            <select data-cfg-field="protocol" data-model="${escapeHtml(m.id)}">
-              <option value="chat" ${m.protocol !== 'gemini' ? 'selected' : ''}>chat (OpenAI 兼容)</option>
-              <option value="gemini" ${m.protocol === 'gemini' ? 'selected' : ''}>gemini (Google 原生)</option>
-            </select>
-          </label>
-          <label style="grid-column: span 2;">
-            <span>API Key ${isLocal ? '<small>(本地服务无需填写)</small>' : '<small>(留空保持原配置)</small>'}</span>
-            <div class="input-with-action">
-              <input type="password" data-cfg-field="apiKey" data-model="${escapeHtml(m.id)}" placeholder="${m.hasKey ? (m.maskedKey || '已配置密钥') : '输入 API Key (如 sk-…)'}">
-              <button type="button" class="model-action-btn" data-toggle-key="${escapeHtml(m.id)}" title="切换明文显示">👁️</button>
+      <div class="dsh-provider-card editing" data-provider-id="${escapeHtml(p.id)}">
+        <div class="dsh-provider-edit-pane">
+          <div class="dsh-edit-header">
+            <div class="dsh-edit-header-title">
+              <strong>${escapeHtml(p.name)}</strong>
+              <span>${escapeHtml(p.officialId)}</span>
             </div>
-          </label>
-        </div>
+            ${providers.length > 1 ? `<button type="button" class="dsh-btn dsh-btn-danger" data-delete-provider="${escapeHtml(p.id)}">删除</button>` : ''}
+          </div>
 
-        <div id="discover-box-${escapeHtml(m.id)}" class="discovered-models-box" hidden></div>
-        <div id="test-box-${escapeHtml(m.id)}" class="test-result-indicator" hidden></div>
+          <div class="dsh-field-group">
+            <label class="dsh-field-label">API 密钥</label>
+            <div class="dsh-input-wrap">
+              <input type="password" class="dsh-input" id="dsh-key-${escapeHtml(p.id)}"
+                value="${escapeHtml(p.apiKey || '')}"
+                placeholder="${p.hasKey ? (p.maskedKey || '已配置密钥') : '输入 API Key (如 sk-…)'}">
+              <button type="button" class="dsh-btn" data-test-provider-input="${escapeHtml(p.id)}">测试</button>
+            </div>
+            <div class="dsh-input-helper">${p.isLocal ? '本地服务无需填写' : (p.hasKey ? '已配置凭据，留空保持原密钥' : '请输入服务商 API 密钥')}</div>
+          </div>
+          <div id="dsh-test-result-${escapeHtml(p.id)}" class="test-result-indicator" hidden></div>
+
+          <details class="dsh-custom-details" id="dsh-details-${escapeHtml(p.id)}">
+            <summary class="dsh-custom-summary">自定义设置</summary>
+            <div class="dsh-custom-body">
+              <div class="dsh-field-group">
+                <label class="dsh-field-label">API 地址</label>
+                <input type="text" class="dsh-input" id="dsh-url-${escapeHtml(p.id)}" value="${escapeHtml(p.baseUrl)}" placeholder="https://api.example.com/v1">
+              </div>
+
+              <div class="dsh-field-group">
+                <label class="dsh-field-label">协议规范</label>
+                <select class="dsh-input" id="dsh-proto-${escapeHtml(p.id)}">
+                  <option value="chat" ${p.protocol !== 'gemini' ? 'selected' : ''}>chat (OpenAI 兼容)</option>
+                  <option value="gemini" ${p.protocol === 'gemini' ? 'selected' : ''}>gemini (Google 原生)</option>
+                </select>
+              </div>
+
+              <div class="dsh-catalog-section">
+                <div class="dsh-catalog-header">
+                  <span class="dsh-catalog-title">模型目录</span>
+                  <button type="button" class="dsh-catalog-action-link" data-discover-provider="${escapeHtml(p.id)}">探测可用模型</button>
+                </div>
+
+                <div id="dsh-discover-box-${escapeHtml(p.id)}" class="discovered-models-box" hidden style="margin: 6px 0"></div>
+
+                <div class="dsh-catalog-table" id="dsh-catalog-table-${escapeHtml(p.id)}">
+                  <div class="dsh-catalog-table-header">
+                    <span>模型标识 (Model)</span>
+                    <span>显示名称 (Display Name)</span>
+                    <span></span>
+                  </div>
+                  ${catalogRowsHtml}
+                </div>
+
+                <button type="button" class="dsh-add-submodel-btn" data-add-catalog-row="${escapeHtml(p.id)}" style="margin-top: 8px">
+                  + 添加模型
+                </button>
+              </div>
+            </div>
+          </details>
+
+          <div class="dsh-edit-footer">
+            <button type="button" class="dsh-btn" data-cancel-edit-provider="${escapeHtml(p.id)}">取消</button>
+            <button type="button" class="dsh-btn dsh-btn-primary" data-save-provider="${escapeHtml(p.id)}">保存</button>
+          </div>
+        </div>
       </div>
     `;
   }).join('');
 
+  let addProviderBlockHtml = '';
+  if (isAdding) {
+    const isCustomTab = state.addProviderTab === 'custom';
+    const selectedPresetId = state.selectedAddPresetId || 'OPENAI';
+    const preset = MODEL_PRESETS.find(p => p.id === selectedPresetId) || MODEL_PRESETS[0];
+
+    const presetOptions = MODEL_PRESETS.map(p => `
+      <option value="${escapeHtml(p.id)}" ${p.id === selectedPresetId ? 'selected' : ''}>
+        ${escapeHtml(p.label)}
+      </option>
+    `).join('');
+
+    const presetCatalogRows = (preset.modelsList || [preset.model]).map(m => `
+      <div class="dsh-catalog-row" data-new-catalog-row>
+        <input type="text" class="dsh-input" data-new-catalog-model value="${escapeHtml(m)}" placeholder="模型标识">
+        <input type="text" class="dsh-input" data-new-catalog-display value="${escapeHtml(m)}" placeholder="显示名称">
+        <button type="button" class="dsh-btn dsh-btn-danger" data-remove-new-catalog-row title="删除">删除</button>
+      </div>
+    `).join('');
+
+    addProviderBlockHtml = `
+      <div class="dsh-new-provider-card">
+        <div class="dsh-tabs-switch">
+          <button type="button" class="dsh-tab-pill ${!isCustomTab ? 'active' : ''}" data-switch-add-tab="preset">第三方 API</button>
+          <button type="button" class="dsh-tab-pill ${isCustomTab ? 'active' : ''}" data-switch-add-tab="custom">自定义 API</button>
+        </div>
+
+        ${!isCustomTab ? `
+          <div class="dsh-field-group">
+            <label class="dsh-field-label">模型提供商</label>
+            <select class="dsh-input" id="dsh-new-preset-select">
+              ${presetOptions}
+            </select>
+          </div>
+
+          <div class="dsh-field-group">
+            <label class="dsh-field-label">API 密钥</label>
+            <input type="password" class="dsh-input" id="dsh-new-api-key" placeholder="输入 API Key (如 sk-…)">
+            <div class="dsh-input-helper">${preset.isKeyless ? '本地服务无需填写密钥' : '请输入该提供商的 API 访问凭据'}</div>
+          </div>
+
+          <details class="dsh-custom-details" open>
+            <summary class="dsh-custom-summary">自定义设置</summary>
+            <div class="dsh-custom-body">
+              <div class="dsh-field-group">
+                <label class="dsh-field-label">API 地址</label>
+                <input type="text" class="dsh-input" id="dsh-new-base-url" value="${escapeHtml(preset.baseUrl)}">
+              </div>
+
+              <div class="dsh-field-group">
+                <label class="dsh-field-label">协议规范</label>
+                <select class="dsh-input" id="dsh-new-protocol">
+                  <option value="chat" ${preset.protocol !== 'gemini' ? 'selected' : ''}>chat (OpenAI 兼容)</option>
+                  <option value="gemini" ${preset.protocol === 'gemini' ? 'selected' : ''}>gemini (Google 原生)</option>
+                </select>
+              </div>
+
+              <div class="dsh-catalog-section">
+                <div class="dsh-catalog-header">
+                  <span class="dsh-catalog-title">初始模型目录</span>
+                </div>
+                <div class="dsh-catalog-table" id="dsh-new-catalog-table">
+                  <div class="dsh-catalog-table-header">
+                    <span>模型标识 (Model)</span>
+                    <span>显示名称 (Display Name)</span>
+                    <span></span>
+                  </div>
+                  ${presetCatalogRows}
+                </div>
+                <button type="button" class="dsh-add-submodel-btn" id="dsh-new-add-catalog-row" style="margin-top: 8px">+ 添加模型</button>
+              </div>
+            </div>
+          </details>
+
+          <div class="dsh-edit-footer">
+            <button type="button" class="dsh-btn" data-cancel-add-provider>取消</button>
+            <button type="button" class="dsh-btn dsh-btn-primary" data-confirm-add-preset>保存</button>
+          </div>
+        ` : `
+          <div class="dsh-field-group">
+            <label class="dsh-field-label">提供商名称</label>
+            <input type="text" class="dsh-input" id="dsh-custom-name" placeholder="如：公司私有云 / vLLM">
+          </div>
+
+          <div class="dsh-field-group">
+            <label class="dsh-field-label">API 地址</label>
+            <input type="text" class="dsh-input" id="dsh-custom-url" placeholder="https://api.example.com/v1">
+          </div>
+
+          <div class="dsh-field-group">
+            <label class="dsh-field-label">API 密钥</label>
+            <input type="password" class="dsh-input" id="dsh-custom-key" placeholder="输入 API Key (本地或免密可留空)">
+          </div>
+
+          <div class="dsh-field-group">
+            <label class="dsh-field-label">协议规范</label>
+            <select class="dsh-input" id="dsh-custom-protocol">
+              <option value="chat" selected>chat (OpenAI 兼容)</option>
+              <option value="gemini">gemini (Google 原生)</option>
+            </select>
+          </div>
+
+          <div class="dsh-catalog-section">
+            <div class="dsh-catalog-header">
+              <span class="dsh-catalog-title">模型目录</span>
+            </div>
+            <div class="dsh-catalog-table" id="dsh-new-catalog-table">
+              <div class="dsh-catalog-table-header">
+                <span>模型标识 (Model)</span>
+                <span>显示名称 (Display Name)</span>
+                <span></span>
+              </div>
+              <div class="dsh-catalog-row" data-new-catalog-row>
+                <input type="text" class="dsh-input" data-new-catalog-model value="custom-model" placeholder="模型标识 (如 qwen-72b)">
+                <input type="text" class="dsh-input" data-new-catalog-display value="Custom Model" placeholder="显示名称">
+                <button type="button" class="dsh-btn dsh-btn-danger" data-remove-new-catalog-row title="删除">删除</button>
+              </div>
+            </div>
+            <button type="button" class="dsh-add-submodel-btn" id="dsh-new-add-catalog-row" style="margin-top: 8px">+ 添加模型</button>
+          </div>
+
+          <div class="dsh-edit-footer">
+            <button type="button" class="dsh-btn" data-cancel-add-provider>取消</button>
+            <button type="button" class="dsh-btn dsh-btn-primary" data-confirm-add-custom>保存</button>
+          </div>
+        `}
+      </div>
+    `;
+  } else {
+    addProviderBlockHtml = `
+      <button type="button" class="dsh-add-provider-btn" id="dsh-btn-open-add-provider">
+        + 添加模型提供商
+      </button>
+    `;
+  }
+
+  return `
+    <div class="dsh-models-container">
+      <div class="dsh-models-header">
+        <div class="dsh-models-header-left">
+          <h3>模型</h3>
+          <p>填入各提供商的 API 密钥即可使用其模型。</p>
+        </div>
+        <div class="dsh-main-model-bar">
+          <span>主对话模型:</span>
+          <select id="cfg-role-main" class="dsh-main-model-select">
+            ${mainModelOptionsHtml}
+          </select>
+        </div>
+      </div>
+
+      <div class="dsh-providers-list">
+        ${providerCardsHtml}
+      </div>
+
+      ${addProviderBlockHtml}
+    </div>
+  `;
+}
+
+function renderVaryTabContent(c, models, currentMain) {
   const roleNames = [
     ['chair', '主席整理 (Chair)', '负责每轮发言汇总与核心架构决策'],
     ['dedup', '观点结晶 (Dedup)', '负责跨席位观点去重、合并与结晶'],
@@ -1765,7 +2206,7 @@ function renderSettingsModalContent() {
       <div class="role-assign-item">
         <label title="${escapeHtml(desc)}">${escapeHtml(label)}</label>
         <select data-cfg-role="${key}">
-          ${models.map(m => `<option value="${escapeHtml(m.id)}" ${m.id === val ? 'selected' : ''}>${getModelIcon(m.id)} ${escapeHtml(m.id)}</option>`).join('')}
+          ${models.map(m => `<option value="${escapeHtml(m.id)}" ${m.id === val ? 'selected' : ''}>${escapeHtml(m.providerName || m.id.split('_')[0])} · ${escapeHtml(m.displayName || m.model || m.id)}</option>`).join('')}
         </select>
       </div>
     `;
@@ -1776,68 +2217,67 @@ function renderSettingsModalContent() {
       <div class="role-assign-item">
         <label>席位 #${idx + 1} (${escapeHtml(seat.id)})</label>
         <select data-cfg-seat="${escapeHtml(seat.id)}">
-          ${models.map(m => `<option value="${escapeHtml(m.id)}" ${m.id === seat.modelId ? 'selected' : ''}>${getModelIcon(m.id)} ${escapeHtml(m.id)}</option>`).join('')}
+          ${models.map(m => `<option value="${escapeHtml(m.id)}" ${m.id === seat.modelId ? 'selected' : ''}>${escapeHtml(m.providerName || m.id.split('_')[0])} · ${escapeHtml(m.displayName || m.model || m.id)}</option>`).join('')}
         </select>
       </div>
     `;
   }).join('');
 
-  container.innerHTML = `
-    <div class="active-model-box">
-      <div class="active-model-box-left">
-        <h4>🎯 当前对话主模型 (Main Agent Model)</h4>
-        <p>控制日常多轮对话、调用工作区文件工具以及推演调度的默认模型。</p>
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+      <div>
+        <h3 style="margin:0;font-size:14px;color:var(--ink)">Vary 多视角推演调度规则</h3>
+        <p style="margin:3px 0 0;font-size:11.5px;color:var(--muted)">分配 5 大核心功能角色与 8 席位深度推演模型。</p>
       </div>
-      <select id="cfg-role-main" class="active-model-select">
-        ${modelOptionsHtml}
-      </select>
+      <button type="button" class="ghost-action-btn" id="cfg-sync-all-seats">一键同步席位为主模型</button>
     </div>
 
-    <div class="presets-section">
-      <span class="presets-title">✨ 常用服务商模版一键填入 / 添加：</span>
-      <div class="presets-grid">
-        ${MODEL_PRESETS.map(p => `
-          <button type="button" class="preset-btn" data-preset="${escapeHtml(p.id)}">
-            <span>${p.icon}</span> ${escapeHtml(p.label)}
-          </button>
-        `).join('')}
+    <div class="settings-section">
+      <div class="settings-section-title">核心功能角色模型分配</div>
+      <div class="role-assign-grid">
+        ${roleAssignHtml}
       </div>
     </div>
 
-    <div class="models-list-section">
-      <div class="models-list-header">
-        <h3>已配置服务商与模型 (${models.length})</h3>
-        <button type="button" class="add-model-btn" id="cfg-add-model-btn">➕ 添加自定义模型</button>
-      </div>
-      <div class="models-cards-wrap" style="display:flex;flex-direction:column;gap:12px">
-        ${modelCardsHtml}
+    <div class="settings-section" style="margin-top:10px">
+      <div class="settings-section-title">Varina 8 席位推演分配</div>
+      <div class="role-assign-grid">
+        ${seatsHtml}
       </div>
     </div>
 
-    <details class="advanced-roles-details">
-      <summary class="advanced-roles-summary">
-        <span>⚙️ 高级角色与 8 席位推演调度规则 (点击展开)</span>
-        <span>▼</span>
-      </summary>
-      <div class="advanced-roles-body">
-        <h4 style="margin:0;font-size:12px;color:var(--ink)">核心功能角色模型分配</h4>
-        <div class="role-assign-grid">
-          ${roleAssignHtml}
-        </div>
-        <h4 style="margin:10px 0 0;font-size:12px;color:var(--ink)">Varina 8 席位推演分配</h4>
-        <div class="role-assign-grid">
-          ${seatsHtml}
-        </div>
-        <h4 style="margin:10px 0 0;font-size:12px;color:var(--ink)">子问题独立发散</h4>
-        <div class="role-assign-grid">
-          <div class="role-assign-item">
-            <label title="每个拆解后的子问题分别调用多少个回答席位">每个子问题的回答数 n2</label>
-            <input id="cfg-answers-per-subproblem" type="number" min="1" max="8" step="1" value="${escapeHtml(c.subproblemExpansion?.answersPerSubproblem ?? 2)}">
-          </div>
+    <div class="settings-section" style="margin-top:10px">
+      <div class="settings-section-title">子问题独立发散</div>
+      <div class="role-assign-grid">
+        <div class="role-assign-item">
+          <label title="每个拆解后的子问题分别调用多少个回答席位">每个子问题的回答数 n2</label>
+          <input id="cfg-answers-per-subproblem" type="number" min="1" max="8" step="1" value="${escapeHtml(c.subproblemExpansion?.answersPerSubproblem ?? 2)}">
         </div>
       </div>
-    </details>
+    </div>
   `;
+}
+
+function renderSettingsModalContent() {
+  const container = $('#settings-tab-content');
+  if (!container || !state.editingConfig) return;
+
+  const tab = state.activeSettingsTab || 'general';
+  document.querySelectorAll('.settings-tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+
+  const c = state.editingConfig;
+  const models = c.models || [];
+  const currentMain = c.roles?.main || c.roles?.chair || models[0]?.id || '';
+
+  if (tab === 'general') {
+    container.innerHTML = renderGeneralTabContent();
+  } else if (tab === 'models') {
+    container.innerHTML = renderModelsTabContent(c, models, currentMain);
+  } else if (tab === 'vary') {
+    container.innerHTML = renderVaryTabContent(c, models, currentMain);
+  }
 }
 
 async function openSettingsModal() {
@@ -1851,6 +2291,8 @@ async function openSettingsModal() {
     if (!state.editingConfig.roles.main) {
       state.editingConfig.roles.main = state.editingConfig.roles.chair || state.editingConfig.models?.[0]?.id || '';
     }
+    state.editingProviderId = null;
+    state.isAddingProvider = false;
     renderSettingsModalContent();
     if (!dialog.open) dialog.showModal();
   } catch (error) {
@@ -1858,145 +2300,233 @@ async function openSettingsModal() {
   }
 }
 
-function applyPreset(presetId) {
+function deleteProvider(providerId) {
   syncFieldsToState();
-  const preset = MODEL_PRESETS.find(p => p.id === presetId);
-  if (!preset) return;
-  const existing = state.editingConfig.models.find(m => m.id === preset.id);
-  if (existing) {
-    existing.baseUrl = preset.baseUrl;
-    existing.protocol = preset.protocol;
-    existing.model = preset.model;
-    existing.tokenParameter = preset.tokenParameter || 'max_tokens';
-    existing.structuredOutput = preset.structuredOutput || 'json_object';
-    toast(`已用「${preset.label}」最新端点更新 ${preset.id}`);
-  } else {
-    state.editingConfig.models.push({
-      id: preset.id,
-      model: preset.model,
-      baseUrl: preset.baseUrl,
-      protocol: preset.protocol,
-      tokenParameter: preset.tokenParameter || 'max_tokens',
-      structuredOutput: preset.structuredOutput || 'json_object',
-      supportsTemperature: preset.supportsTemperature ?? true,
-      supportsReasoning: preset.supportsReasoning ?? true,
-      supportsSeed: preset.supportsSeed ?? false,
-      hasKey: false
-    });
-    toast(`已添加「${preset.label}」，请在下方填写 API Key 并保存`);
-  }
-  renderSettingsModalContent();
-}
-
-function addCustomModel() {
-  syncFieldsToState();
-  let nextId = `MODEL_${state.editingConfig.models.length + 1}`;
-  let count = 2;
-  while (state.editingConfig.models.some(m => m.id === nextId)) {
-    nextId = `MODEL_${count++}`;
-  }
-  state.editingConfig.models.push({
-    id: nextId,
-    model: '',
-    baseUrl: 'https://',
-    protocol: 'chat',
-    tokenParameter: 'max_tokens',
-    structuredOutput: 'json_object',
-    supportsTemperature: true,
-    supportsReasoning: true,
-    supportsSeed: false,
-    hasKey: false
-  });
-  renderSettingsModalContent();
-  toast('已添加新模型卡片，请配置端点与模型名称');
-}
-
-function deleteModel(modelId) {
-  syncFieldsToState();
-  if (state.editingConfig.models.length <= 1) {
-    toast('至少保留一个模型配置');
+  const isMatch = m => m.providerId === providerId || (!m.providerId && (m.id === providerId || m.id.startsWith(`${providerId}_`)));
+  const remaining = state.editingConfig.models.filter(m => !isMatch(m));
+  if (remaining.length === 0) {
+    toast('至少保留一个模型提供商');
     return;
   }
-  state.editingConfig.models = state.editingConfig.models.filter(m => m.id !== modelId);
-  if (state.editingConfig.roles.main === modelId) {
-    state.editingConfig.roles.main = state.editingConfig.models[0].id;
-  }
+  state.editingConfig.models = remaining;
+  state.editingProviderId = null;
+
+  const validIds = new Set(remaining.map(m => m.id));
+  const fallbackId = remaining[0].id;
+  if (!validIds.has(state.editingConfig.roles.main)) state.editingConfig.roles.main = fallbackId;
   for (const [r, id] of Object.entries(state.editingConfig.roles)) {
-    if (id === modelId) state.editingConfig.roles[r] = state.editingConfig.models[0].id;
+    if (!validIds.has(id)) state.editingConfig.roles[r] = fallbackId;
   }
   (state.editingConfig.seats || []).forEach(seat => {
-    if (seat.modelId === modelId) seat.modelId = state.editingConfig.models[0].id;
+    if (!validIds.has(seat.modelId)) seat.modelId = fallbackId;
   });
-  renderSettingsModalContent();
-  toast(`已删除模型 ${modelId}`);
+
+  void persistConfig(false);
 }
 
-async function testModel(modelId) {
-  syncFieldsToState();
-  const testBox = document.getElementById(`test-box-${modelId}`);
-  if (!testBox) return;
-  testBox.hidden = false;
-  testBox.className = 'test-result-indicator running';
-  testBox.innerHTML = '<span class="activity-pulse"></span> 正在测试网络与 API 连通性…';
+async function testProvider(providerId, fromInput = false) {
+  const resultBox = document.getElementById(`dsh-test-result-${providerId}`);
+  if (resultBox) {
+    resultBox.hidden = false;
+    resultBox.className = 'test-result-indicator running';
+    resultBox.innerHTML = '<span class="activity-pulse"></span> 正在测试网络与 API 连通性…';
+  }
 
-  const m = state.editingConfig.models.find(item => item.id === modelId);
-  if (!m) return;
+  const providers = getDshProviders(state.editingConfig.models);
+  const p = providers.find(item => item.id === providerId);
+  if (!p) return;
+
+  const keyInput = document.getElementById(`dsh-key-${providerId}`);
+  const urlInput = document.getElementById(`dsh-url-${providerId}`);
+  const protoSelect = document.getElementById(`dsh-proto-${providerId}`);
+
+  let key = fromInput ? (keyInput?.value?.trim() || p.apiKey) : p.apiKey;
+  let baseUrl = fromInput ? (urlInput?.value?.trim() || p.baseUrl) : p.baseUrl;
+  let protocol = fromInput ? (protoSelect?.value || p.protocol) : p.protocol;
+  let firstModel = p.catalog[0]?.model || p.model || 'test';
+
+  const testConfig = {
+    id: p.id,
+    model: firstModel,
+    baseUrl: baseUrl,
+    protocol: protocol,
+    tokenParameter: p.tokenParameter,
+    structuredOutput: p.structuredOutput,
+    supportsTemperature: p.supportsTemperature,
+    supportsReasoning: p.supportsReasoning,
+    supportsSeed: p.supportsSeed,
+    isKeyless: p.isKeyless
+  };
 
   try {
     const res = await api('/api/models/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ modelConfig: m, apiKey: m.apiKey })
+      body: JSON.stringify({ modelConfig: testConfig, apiKey: key })
     });
-    if (res.ok) {
-      testBox.className = 'test-result-indicator success';
-      testBox.innerHTML = `✓ 测试通过！延迟 <b>${res.latencyMs}ms</b> · 模型: <code>${escapeHtml(res.model || m.model)}</code> · 响应: ${escapeHtml(res.response || 'OK')}`;
-    } else {
-      testBox.className = 'test-result-indicator fail';
-      testBox.innerHTML = `❌ 连通失败 (${res.latencyMs ? res.latencyMs + 'ms' : '错误'}): ${escapeHtml(res.error || '未能连接到端点')}`;
+    if (resultBox) {
+      if (res.ok) {
+        resultBox.className = 'test-result-indicator success';
+        resultBox.innerHTML = `测试通过！延迟 <b>${res.latencyMs}ms</b> · 响应: ${escapeHtml(res.response || 'OK')}`;
+      } else {
+        resultBox.className = 'test-result-indicator fail';
+        resultBox.innerHTML = `连通失败 (${res.latencyMs ? res.latencyMs + 'ms' : '错误'}): ${escapeHtml(res.error || '未能连接到服务端点')}`;
+      }
     }
   } catch (err) {
-    testBox.className = 'test-result-indicator fail';
-    testBox.innerHTML = `❌ 请求错误: ${escapeHtml(err.message)}`;
+    if (resultBox) {
+      resultBox.className = 'test-result-indicator fail';
+      resultBox.innerHTML = `请求错误: ${escapeHtml(err.message)}`;
+    }
   }
 }
 
-async function discoverModels(modelId) {
-  syncFieldsToState();
-  const box = document.getElementById(`discover-box-${modelId}`);
+async function discoverProviderModels(providerId) {
+  const box = document.getElementById(`dsh-discover-box-${providerId}`);
   if (!box) return;
   box.hidden = false;
-  box.innerHTML = '<div style="font-size:10.5px;color:var(--muted)">🔍 正在探测端点可用模型…</div>';
+  box.innerHTML = '<div style="font-size:10.5px;color:var(--muted)">正在探测端点可用模型…</div>';
 
-  const m = state.editingConfig.models.find(item => item.id === modelId);
-  if (!m) return;
+  const providers = getDshProviders(state.editingConfig.models);
+  const p = providers.find(item => item.id === providerId);
+  if (!p) return;
+
+  const keyInput = document.getElementById(`dsh-key-${providerId}`);
+  const urlInput = document.getElementById(`dsh-url-${providerId}`);
+  const protoSelect = document.getElementById(`dsh-proto-${providerId}`);
+
+  const apiKey = keyInput?.value?.trim() || p.apiKey;
+  const baseUrl = urlInput?.value?.trim() || p.baseUrl;
+  const protocol = protoSelect?.value || p.protocol;
 
   try {
     const res = await api('/api/models/discover', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ baseUrl: m.baseUrl, apiKey: m.apiKey, protocol: m.protocol, modelId })
+      body: JSON.stringify({ baseUrl, apiKey, protocol, modelId: p.id })
     });
     if (res.ok && res.models?.length) {
       box.innerHTML = `
         <div style="font-size:10.5px;font-weight:600;color:var(--accent);width:100%;margin-bottom:4px">
-          命中 ${res.models.length} 个可用模型 (点击直接填入)：
+          命中 ${res.models.length} 个可用模型 (点击直接添加至目录)：
         </div>
-        ${res.models.slice(0, 24).map(mod => `
-          <button type="button" class="discovered-model-pill" data-fill-model="${escapeHtml(mod.id)}" data-target-id="${escapeHtml(modelId)}">
-            ${escapeHtml(mod.id)}
+        ${res.models.slice(0, 30).map(mod => `
+          <button type="button" class="discovered-model-pill" data-fill-catalog-model="${escapeHtml(mod.id)}" data-provider-id="${escapeHtml(providerId)}">
+            + ${escapeHtml(mod.id)}
           </button>
         `).join('')}
       `;
     } else {
-      box.innerHTML = `<div style="font-size:10.5px;color:#a83832">❌ ${escapeHtml(res.error || '未能在该端点发现模型列表')}</div>`;
+      box.innerHTML = `<div style="font-size:10.5px;color:#a83832">${escapeHtml(res.error || '未能在该端点发现模型列表')}</div>`;
     }
   } catch (err) {
-    box.innerHTML = `<div style="font-size:10.5px;color:#a83832">❌ 探测出错: ${escapeHtml(err.message)}</div>`;
+    box.innerHTML = `<div style="font-size:10.5px;color:#a83832">探测出错: ${escapeHtml(err.message)}</div>`;
   }
 }
 
-async function saveSettingsModal() {
+function addProviderFromPreset(presetId) {
+  const preset = MODEL_PRESETS.find(p => p.id === presetId);
+  if (!preset) return;
+  const keyInput = document.getElementById('dsh-new-api-key');
+  const urlInput = document.getElementById('dsh-new-base-url');
+  const protoSelect = document.getElementById('dsh-new-protocol');
+  const rows = document.querySelectorAll('#dsh-new-catalog-table [data-new-catalog-row]');
+
+  const key = keyInput?.value?.trim() || '';
+  const baseUrl = urlInput?.value?.trim() || preset.baseUrl;
+  const protocol = protoSelect?.value || preset.protocol;
+
+  const catalog = [];
+  rows.forEach(r => {
+    const m = r.querySelector('[data-new-catalog-model]')?.value?.trim() || '';
+    const d = r.querySelector('[data-new-catalog-display]')?.value?.trim() || m;
+    if (m) catalog.push({ model: m, displayName: d });
+  });
+  if (catalog.length === 0) {
+    (preset.modelsList || [preset.model]).forEach(m => catalog.push({ model: m, displayName: m }));
+  }
+
+  const pName = preset.label.split(' ')[0];
+  catalog.forEach((item, idx) => {
+    let modelId = idx === 0 ? preset.id : `${preset.id}_${item.model.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+    let counter = 2;
+    while (state.editingConfig.models.some(m => m.id === modelId)) {
+      modelId = `${preset.id}_${item.model.replace(/[^a-zA-Z0-9_-]/g, '_')}_${counter++}`;
+    }
+    state.editingConfig.models.push({
+      id: modelId,
+      model: item.model,
+      displayName: item.displayName,
+      baseUrl: baseUrl,
+      protocol: protocol,
+      tokenParameter: preset.tokenParameter || 'max_tokens',
+      structuredOutput: preset.structuredOutput || 'json_object',
+      supportsTemperature: preset.supportsTemperature ?? true,
+      supportsReasoning: preset.supportsReasoning ?? true,
+      supportsSeed: preset.supportsSeed ?? false,
+      providerId: preset.id,
+      providerName: pName,
+      hasKey: Boolean(key),
+      apiKey: key || undefined
+    });
+  });
+
+  state.isAddingProvider = false;
+  void persistConfig(false);
+}
+
+function addProviderCustom() {
+  const nameInput = document.getElementById('dsh-custom-name');
+  const urlInput = document.getElementById('dsh-custom-url');
+  const keyInput = document.getElementById('dsh-custom-key');
+  const protoSelect = document.getElementById('dsh-custom-protocol');
+  const rows = document.querySelectorAll('#dsh-new-catalog-table [data-new-catalog-row]');
+
+  const pName = nameInput?.value?.trim() || '自定义API';
+  const baseUrl = urlInput?.value?.trim() || 'https://';
+  const key = keyInput?.value?.trim() || '';
+  const protocol = protoSelect?.value || 'chat';
+
+  const catalog = [];
+  rows.forEach(r => {
+    const m = r.querySelector('[data-new-catalog-model]')?.value?.trim() || '';
+    const d = r.querySelector('[data-new-catalog-display]')?.value?.trim() || m;
+    if (m) catalog.push({ model: m, displayName: d });
+  });
+  if (catalog.length === 0) {
+    catalog.push({ model: 'custom-model', displayName: 'Custom Model' });
+  }
+
+  let pId = `CUSTOM_${Date.now()}`;
+  catalog.forEach((item, idx) => {
+    let modelId = idx === 0 ? pId : `${pId}_${item.model.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+    let counter = 2;
+    while (state.editingConfig.models.some(m => m.id === modelId)) {
+      modelId = `${pId}_${item.model.replace(/[^a-zA-Z0-9_-]/g, '_')}_${counter++}`;
+    }
+    state.editingConfig.models.push({
+      id: modelId,
+      model: item.model,
+      displayName: item.displayName,
+      baseUrl: baseUrl,
+      protocol: protocol,
+      tokenParameter: 'max_tokens',
+      structuredOutput: 'json_object',
+      supportsTemperature: true,
+      supportsReasoning: true,
+      supportsSeed: false,
+      providerId: pId,
+      providerName: pName,
+      hasKey: Boolean(key),
+      apiKey: key || undefined
+    });
+  });
+
+  state.isAddingProvider = false;
+  void persistConfig(false);
+}
+
+async function persistConfig(shouldCloseDialog = false) {
   syncFieldsToState();
   if (!state.editingConfig) return;
 
@@ -2015,11 +2545,20 @@ async function saveSettingsModal() {
     });
     state.config = await api('/api/config');
     updateComposerModel();
-    $('#settings-dialog').close();
-    toast('大模型选型与配置已成功保存并即时生效！');
+    if (shouldCloseDialog) {
+      $('#settings-dialog')?.close();
+      toast('大模型选型与配置已成功保存并即时生效！');
+    } else {
+      renderSettingsModalContent();
+      toast('配置已成功更新并生效');
+    }
   } catch (error) {
     toast(`保存失败: ${error.message}`);
   }
+}
+
+async function saveSettingsModal() {
+  await persistConfig(true);
 }
 
 $('#new-session').addEventListener('click', () => openFolderDialog().catch(error => toast(error.message)));
@@ -2033,7 +2572,21 @@ $('#tab-live')?.addEventListener('click', () => { state.activeMode = 'live'; ren
 $('#tab-mock')?.addEventListener('click', () => { state.activeMode = 'mock'; renderSessions(); });
 $('#clear-mock-btn')?.addEventListener('click', () => { clearMockSessions().catch(error => toast(error.message)); });
 $('#composer').addEventListener('submit', event => { event.preventDefault(); sendMessage($('#message-input').value).catch(error => { setRunning(false); toast(error.message); }); });
-$('#message-input').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); $('#composer').requestSubmit(); } });
+$('#message-input').addEventListener('keydown', event => {
+  const prefs = getPreferences();
+  const isCtrlOrCmd = event.ctrlKey || event.metaKey;
+  if (prefs.sendShortcut === 'ctrl_enter') {
+    if (event.key === 'Enter' && isCtrlOrCmd) {
+      event.preventDefault();
+      $('#composer').requestSubmit();
+    }
+  } else {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      $('#composer').requestSubmit();
+    }
+  }
+});
 $('#message-input').addEventListener('input', event => { event.target.style.height = 'auto'; event.target.style.height = `${Math.min(210, event.target.scrollHeight)}px`; });
 $('#session-list').addEventListener('click', event => {
   const deleteBtn = event.target.closest('[data-delete-session]');
@@ -2152,60 +2705,261 @@ $('#new-session-dialog')?.addEventListener('click', event => {
 });
 
 $('#aha-toggle')?.addEventListener('click', () => {
-  state.ahaEnabled = !state.ahaEnabled;
-  localStorage.setItem('varina_enabled', String(state.ahaEnabled));
-  updateVarinaToggle();
-  toast(`Varina 深度探索已${state.ahaEnabled ? '开启 (将自动启动 8 席位多视角推演)' : '关闭 (仅日常对话与文件读写)'}`);
+  const modes = ['smart', 'ask', 'always', 'never'];
+  const cur = getPreferences().varyTriggerMode;
+  const nextIdx = (modes.indexOf(cur) + 1) % modes.length;
+  const next = modes[nextIdx];
+  savePreference('vary_trigger_mode', next);
+  const labels = {
+    smart: '智能判定 (推荐，遇到机制分歧自动推演)',
+    ask: '每次询问 (执行前弹出确认卡片)',
+    always: '总是开启 (强制启动 8 席位推演)',
+    never: '总是关闭 (仅常规对话与工具操作)'
+  };
+  toast(`Vary 探索策略已切换为: ${labels[next]}`);
+});
+
+$('.settings-sidebar')?.addEventListener('click', event => {
+  const tabBtn = event.target.closest('.settings-tab-btn');
+  if (tabBtn) {
+    syncFieldsToState();
+    state.activeSettingsTab = tabBtn.dataset.tab;
+    renderSettingsModalContent();
+  }
+});
+
+$('#open-config-file-btn')?.addEventListener('click', async () => {
+  try {
+    const res = await api('/api/config/open', { method: 'POST' });
+    if (res.ok) {
+      toast(`已尝试在系统编辑器中打开配置文件: ${res.path}`);
+    } else {
+      toast(`配置文件路径: ${res.path}`);
+    }
+  } catch (err) {
+    toast(`打开配置文件失败: ${err.message}`);
+  }
+});
+
+$('#settings-body')?.addEventListener('change', event => {
+  const prefSelect = event.target.closest('[data-pref]');
+  if (prefSelect) {
+    savePreference(prefSelect.dataset.pref, prefSelect.value);
+    toast('已保存偏好设置');
+    return;
+  }
+  const mainSelect = event.target.closest('#cfg-role-main');
+  if (mainSelect && state.editingConfig) {
+    state.editingConfig.roles ??= {};
+    state.editingConfig.roles.main = mainSelect.value;
+    return;
+  }
+  const presetSelect = event.target.closest('#dsh-new-preset-select');
+  if (presetSelect) {
+    state.selectedAddPresetId = presetSelect.value;
+    renderSettingsModalContent();
+    return;
+  }
+  const roleSelect = event.target.closest('[data-cfg-role]');
+  if (roleSelect && state.editingConfig) {
+    state.editingConfig.roles ??= {};
+    state.editingConfig.roles[roleSelect.dataset.cfgRole] = roleSelect.value;
+    return;
+  }
+  const seatSelect = event.target.closest('[data-cfg-seat]');
+  if (seatSelect && state.editingConfig) {
+    const seat = (state.editingConfig.seats || []).find(s => s.id === seatSelect.dataset.cfgSeat);
+    if (seat) seat.modelId = seatSelect.value;
+    return;
+  }
 });
 
 $('#settings-body')?.addEventListener('click', event => {
-  const testBtn = event.target.closest('[data-test-model]');
-  if (testBtn) {
-    testModel(testBtn.dataset.testModel);
-    return;
-  }
-  const discoverBtn = event.target.closest('[data-discover-model]');
-  if (discoverBtn) {
-    discoverModels(discoverBtn.dataset.discoverModel);
-    return;
-  }
-  const deleteBtn = event.target.closest('[data-delete-model]');
-  if (deleteBtn) {
-    deleteModel(deleteBtn.dataset.deleteModel);
-    return;
-  }
-  const presetBtn = event.target.closest('[data-preset]');
-  if (presetBtn) {
-    applyPreset(presetBtn.dataset.preset);
-    return;
-  }
-  if (event.target.closest('#cfg-add-model-btn')) {
-    addCustomModel();
-    return;
-  }
-  const toggleKeyBtn = event.target.closest('[data-toggle-key]');
-  if (toggleKeyBtn) {
-    const modelId = toggleKeyBtn.dataset.toggleKey;
-    const input = document.querySelector(`input[data-cfg-field="apiKey"][data-model="${CSS.escape(modelId)}"]`);
-    if (input) input.type = input.type === 'password' ? 'text' : 'password';
-    return;
-  }
-  const fillPill = event.target.closest('[data-fill-model]');
-  if (fillPill) {
-    const targetId = fillPill.dataset.targetId;
-    const modelVal = fillPill.dataset.fillModel;
-    const input = document.querySelector(`input[data-cfg-field="model"][data-model="${CSS.escape(targetId)}"]`);
-    if (input) {
-      input.value = modelVal;
-      const model = state.editingConfig?.models.find(m => m.id === targetId);
-      if (model) model.model = modelVal;
-      toast(`已填入模型: ${modelVal}`);
+  const syncSeatsBtn = event.target.closest('#cfg-sync-all-seats');
+  if (syncSeatsBtn) {
+    syncFieldsToState();
+    const mainRoleModelId = state.editingConfig?.roles?.main || state.editingConfig?.roles?.chair || state.editingConfig?.models?.[0]?.id;
+    if (mainRoleModelId) {
+      (state.editingConfig.seats || []).forEach(seat => {
+        seat.modelId = mainRoleModelId;
+      });
+      renderSettingsModalContent();
+      toast(`已将 8 席位统一设置为主模型: ${mainRoleModelId}`);
     }
+    return;
+  }
+
+  const editProviderBtn = event.target.closest('[data-edit-provider]');
+  if (editProviderBtn) {
+    syncFieldsToState();
+    state.editingProviderId = editProviderBtn.dataset.editProvider;
+    state.isAddingProvider = false;
+    renderSettingsModalContent();
+    return;
+  }
+
+  const cancelEditBtn = event.target.closest('[data-cancel-edit-provider]');
+  if (cancelEditBtn) {
+    state.editingProviderId = null;
+    renderSettingsModalContent();
+    return;
+  }
+
+  const saveProviderBtn = event.target.closest('[data-save-provider]');
+  if (saveProviderBtn) {
+    const pId = saveProviderBtn.dataset.saveProvider;
+    syncProviderFieldsToState(pId);
+    state.editingProviderId = null;
+    void persistConfig(false);
+    return;
+  }
+
+  const deleteProviderBtn = event.target.closest('[data-delete-provider]');
+  if (deleteProviderBtn) {
+    const pId = deleteProviderBtn.dataset.deleteProvider;
+    if (confirm(`确定要移除提供商「${pId}」及其所有模型配置吗？`)) {
+      deleteProvider(pId);
+    }
+    return;
+  }
+
+  const testProviderBtn = event.target.closest('[data-test-provider]');
+  if (testProviderBtn) {
+    void testProvider(testProviderBtn.dataset.testProvider, false);
+    return;
+  }
+
+  const testProviderInputBtn = event.target.closest('[data-test-provider-input]');
+  if (testProviderInputBtn) {
+    void testProvider(testProviderInputBtn.dataset.testProviderInput, true);
+    return;
+  }
+
+  const discoverProviderBtn = event.target.closest('[data-discover-provider]');
+  if (discoverProviderBtn) {
+    void discoverProviderModels(discoverProviderBtn.dataset.discoverProvider);
+    return;
+  }
+
+  const fillCatalogModelBtn = event.target.closest('[data-fill-catalog-model]');
+  if (fillCatalogModelBtn) {
+    const pId = fillCatalogModelBtn.dataset.providerId;
+    const modelId = fillCatalogModelBtn.dataset.fillCatalogModel;
+    const table = document.getElementById(`dsh-catalog-table-${pId}`);
+    if (table) {
+      const row = document.createElement('div');
+      row.className = 'dsh-catalog-row';
+      row.dataset.catalogId = `${pId}_${modelId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+      row.dataset.providerId = pId;
+      row.innerHTML = `
+        <input type="text" class="dsh-input" data-catalog-field="model" value="${escapeHtml(modelId)}" placeholder="模型标识">
+        <input type="text" class="dsh-input" data-catalog-field="displayName" value="${escapeHtml(modelId)}" placeholder="显示名称">
+        <button type="button" class="dsh-btn dsh-btn-danger" data-remove-catalog-row="${escapeHtml(row.dataset.catalogId)}" title="移除模型">删除</button>
+      `;
+      table.appendChild(row);
+      toast(`已将模型「${modelId}」添加至目录`);
+    }
+    return;
+  }
+
+  const addCatalogRowBtn = event.target.closest('[data-add-catalog-row]');
+  if (addCatalogRowBtn) {
+    const pId = addCatalogRowBtn.dataset.addCatalogRow;
+    const table = document.getElementById(`dsh-catalog-table-${pId}`);
+    if (table) {
+      const row = document.createElement('div');
+      row.className = 'dsh-catalog-row';
+      row.dataset.catalogId = `${pId}_custom_${Date.now()}`;
+      row.dataset.providerId = pId;
+      row.innerHTML = `
+        <input type="text" class="dsh-input" data-catalog-field="model" value="" placeholder="模型标识 (如 gpt-6.1-sol)">
+        <input type="text" class="dsh-input" data-catalog-field="displayName" value="" placeholder="显示名称 (如 GPT 6.1 Sol)">
+        <button type="button" class="dsh-btn dsh-btn-danger" data-remove-catalog-row="${escapeHtml(row.dataset.catalogId)}" title="移除模型">删除</button>
+      `;
+      table.appendChild(row);
+      row.querySelector('input')?.focus();
+    }
+    return;
+  }
+
+  const removeCatalogRowBtn = event.target.closest('[data-remove-catalog-row]');
+  if (removeCatalogRowBtn) {
+    const row = removeCatalogRowBtn.closest('.dsh-catalog-row');
+    if (row) {
+      const table = row.parentElement;
+      if (table && table.querySelectorAll('.dsh-catalog-row').length <= 1) {
+        toast('提供商至少需保留一个模型');
+        return;
+      }
+      row.remove();
+    }
+    return;
+  }
+
+  const openAddProviderBtn = event.target.closest('#dsh-btn-open-add-provider');
+  if (openAddProviderBtn) {
+    syncFieldsToState();
+    state.isAddingProvider = true;
+    state.addProviderTab = 'preset';
+    state.editingProviderId = null;
+    renderSettingsModalContent();
+    return;
+  }
+
+  const switchAddTabBtn = event.target.closest('[data-switch-add-tab]');
+  if (switchAddTabBtn) {
+    state.addProviderTab = switchAddTabBtn.dataset.switchAddTab;
+    renderSettingsModalContent();
+    return;
+  }
+
+  const cancelAddProviderBtn = event.target.closest('[data-cancel-add-provider]');
+  if (cancelAddProviderBtn) {
+    state.isAddingProvider = false;
+    renderSettingsModalContent();
+    return;
+  }
+
+  const newAddCatalogRowBtn = event.target.closest('#dsh-new-add-catalog-row');
+  if (newAddCatalogRowBtn) {
+    const table = document.getElementById('dsh-new-catalog-table');
+    if (table) {
+      const row = document.createElement('div');
+      row.className = 'dsh-catalog-row';
+      row.dataset.newCatalogRow = '';
+      row.innerHTML = `
+        <input type="text" class="dsh-input" data-new-catalog-model value="" placeholder="模型标识">
+        <input type="text" class="dsh-input" data-new-catalog-display value="" placeholder="显示名称">
+        <button type="button" class="dsh-btn dsh-btn-danger" data-remove-new-catalog-row title="删除">删除</button>
+      `;
+      table.appendChild(row);
+      row.querySelector('input')?.focus();
+    }
+    return;
+  }
+
+  const removeNewCatalogRowBtn = event.target.closest('[data-remove-new-catalog-row]');
+  if (removeNewCatalogRowBtn) {
+    removeNewCatalogRowBtn.closest('.dsh-catalog-row')?.remove();
+    return;
+  }
+
+  const confirmAddPresetBtn = event.target.closest('[data-confirm-add-preset]');
+  if (confirmAddPresetBtn) {
+    const presetSelect = document.getElementById('dsh-new-preset-select');
+    addProviderFromPreset(presetSelect?.value || 'OPENAI');
+    return;
+  }
+
+  const confirmAddCustomBtn = event.target.closest('[data-confirm-add-custom]');
+  if (confirmAddCustomBtn) {
+    addProviderCustom();
     return;
   }
 });
 
 try {
+  applyPreferences();
   try { state.config = await api('/api/config'); } catch {}
   updateComposerModel();
   updateVarinaToggle();

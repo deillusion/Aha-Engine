@@ -49,7 +49,7 @@
             </div>
             <div class="composer-bar-right">
               <button type="button" id="composer-model-btn" class="composer-model-btn" title="配置与切换模型">
-                <span class="composer-model-icon">⚙️</span>
+                <span class="composer-model-icon"></span>
                 <span id="composer-model-label" class="composer-model-label">模型加载中…</span>
                 <span class="composer-model-chevron">▾</span>
               </button>
@@ -89,14 +89,23 @@
 
   <dialog id="settings-dialog" class="settings-modal-dialog">
     <div class="settings-modal-header">
-      <div>
-        <h2>大模型选型与规则配置</h2>
-        <p>配置对话主模型、服务商端点及 8 席位推演规则；密钥与设置保存在本地。</p>
+      <div class="settings-modal-title-area">
+        <h2>设置</h2>
       </div>
-      <button type="button" class="icon-button" id="close-settings-dialog" aria-label="关闭">×</button>
+      <div class="settings-modal-header-actions">
+        <button type="button" class="ghost-action-btn" id="open-config-file-btn" title="查看或在系统编辑器中打开本地配置文件">打开配置文件</button>
+        <button type="button" class="icon-button" id="close-settings-dialog" aria-label="关闭">×</button>
+      </div>
     </div>
-    <div id="settings-body" class="settings-modal-body">
-      <div id="model-settings" class="model-settings"></div>
+    <div class="settings-modal-layout">
+      <aside class="settings-sidebar">
+        <button type="button" class="settings-tab-btn active" data-tab="general">通用</button>
+        <button type="button" class="settings-tab-btn" data-tab="models">模型</button>
+        <button type="button" class="settings-tab-btn" data-tab="vary">Vary</button>
+      </aside>
+      <main id="settings-body" class="settings-content-pane">
+        <div id="settings-tab-content" class="settings-tab-content"></div>
+      </main>
     </div>
     <div class="settings-modal-footer">
       <button type="button" id="close-settings-btn" class="ghost">关闭</button>

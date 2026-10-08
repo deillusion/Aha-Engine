@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { cp, mkdir, readFile, rename, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { exec } from 'node:child_process';
 import { RunService, RunConflictError } from './src/application/run_service.mjs';
 import { ConfigService } from './src/application/config_service.mjs';
 import { AgentService, AgentTurnConflictError } from './src/agent/agent_service.mjs';
@@ -52,6 +53,21 @@ export async function createApp({
       const url = new URL(req.url, `http://${host}`), route = url.pathname;
       if (route === '/api/config' && req.method === 'GET') {
         return json(200, await configService.overview());
+      }
+      if (route === '/api/config/open' && req.method === 'POST') {
+        const configPath = path.resolve(root, 'config.local.json');
+        try {
+          if (os.platform() === 'win32') {
+            exec(`start "" "${configPath}"`);
+          } else if (os.platform() === 'darwin') {
+            exec(`open "${configPath}"`);
+          } else {
+            exec(`xdg-open "${configPath}"`);
+          }
+          return json(200, { ok: true, path: configPath });
+        } catch (e) {
+          return json(200, { ok: false, path: configPath, error: e.message });
+        }
       }
       if (route === '/api/config' && req.method === 'POST') {
         const input = await body(req);
